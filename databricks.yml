@@ -1,0 +1,32 @@
+# Databricks Asset Bundle for energy-lakehouse-de.
+# Workspace host is NOT set here: it comes from the CLI profile (`-p free`).
+bundle:
+  name: energy-lakehouse-de
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for all tables.
+    default: workspace
+  schema:
+    description: Schema for this target (set per target).
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      schema: energy_dev
+
+  staging:
+    variables:
+      schema: energy_staging
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      schema: energy_prod

@@ -1,0 +1,14 @@
+# Smoke-test job. No cluster definition: tasks run on serverless compute.
+resources:
+  jobs:
+    hello_job:
+      name: hello_job
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+      tasks:
+        - task_key: hello
+          notebook_task:
+            notebook_path: ../src/notebooks/hello.py
