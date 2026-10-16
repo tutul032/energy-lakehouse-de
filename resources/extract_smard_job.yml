@@ -1,0 +1,18 @@
+# Downloads raw SMARD chunks into /Volumes/<catalog>/<schema>/landing.
+# No cluster definition: the notebook task runs on serverless compute. `requests` ships with the
+# serverless base environment, so no extra environment/dependency is declared.
+resources:
+  jobs:
+    extract_smard_job:
+      name: extract_smard_job
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: weeks
+          default: "8"
+      tasks:
+        - task_key: extract_smard
+          notebook_task:
+            notebook_path: ../src/notebooks/01_extract_smard.py

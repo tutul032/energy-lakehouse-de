@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "German energy data engineering on Databricks (SMARD + Open-Meteo)."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "requests>=2.31",
+]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

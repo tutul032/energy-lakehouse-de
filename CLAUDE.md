@@ -16,8 +16,13 @@ Portfolio project: German energy data engineering on Databricks.
 databricks.yml              # bundle root: variables + targets (dev/staging/prod)
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
 src/energy_lakehouse/       # pure, unit-tested Python package
+  utils.py                  #   table_name() helper
+  smard_config.py           #   SMARD series list (filter_id, name, region, unit)
+  smard.py                  #   SMARD extractor: URL builders, fetch_index, extract() (requests only)
+  extract_local.py          #   CLI wrapper around smard.extract() for local runs
 src/notebooks/              # Databricks notebooks (source format .py)
-tests/                      # pytest tests for src/energy_lakehouse
+tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
+data/                       # local landing output (gitignored)
 docs/adr/                   # architecture decision records (NNNN-title.md)
 docs/tutorial/              # step-by-step labs (labN-*.md)
 docs/img/                   # screenshots: labN-stepNN-name.png
@@ -30,10 +35,12 @@ uv sync                                    # create .venv, install dev deps
 uv run ruff check .                        # lint
 uv run ruff format .                       # format (CI runs --check)
 uv run pytest                              # unit tests
+uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8   # SMARD extract
 
 databricks bundle validate -t dev -p free
 databricks bundle deploy   -t dev -p free
 databricks bundle run hello_job -t dev -p free
+databricks bundle run extract_smard_job -t dev -p free
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 ```
 Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`energy_staging`),
@@ -51,6 +58,10 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
   (`&&` in PS 5.1, `export`, `\` line continuations).
 - **Small, pure, testable functions in `src/energy_lakehouse/`**; notebooks stay thin and call
   them. Every new function gets a pytest test.
+- **SMARD landing:** raw chunk JSON is written unchanged to
+  `<base>/smard/filter=<id>/resolution=<res>/<ts>.json` (local `data/landing`, or
+  `/Volumes/<catalog>/<schema>/landing` via `01_extract_smard`). Existing files are skipped;
+  pass `--overwrite` / `overwrite=True` to refresh. Tests never hit the network.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.
