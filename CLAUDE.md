@@ -20,6 +20,11 @@ src/energy_lakehouse/       # pure, unit-tested Python package
   smard_config.py           #   SMARD series list (filter_id, name, region, unit)
   smard.py                  #   SMARD extractor: URL builders, fetch_index, extract() (requests only)
   extract_local.py          #   CLI wrapper around smard.extract() for local runs
+  transforms.py             #   pipeline helpers: path regexes, agg rule by unit, gold columns
+src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
+  bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
+  silver.py                 #   silver_energy_long (MV, exploded + deduped + expectations)
+  gold.py                   #   gold_energy_hourly, gold_energy_daily (MVs, wide)
 src/notebooks/              # Databricks notebooks (source format .py)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
@@ -34,13 +39,15 @@ docs/img/                   # screenshots: labN-stepNN-name.png
 uv sync                                    # create .venv, install dev deps
 uv run ruff check .                        # lint
 uv run ruff format .                       # format (CI runs --check)
-uv run pytest                              # unit tests
+uv run pytest                              # unit tests (or: uv run python -m pytest)
 uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8   # SMARD extract
 
 databricks bundle validate -t dev -p free
 databricks bundle deploy   -t dev -p free
 databricks bundle run hello_job -t dev -p free
 databricks bundle run extract_smard_job -t dev -p free
+databricks bundle run energy_pipeline -t dev -p free                   # incremental update
+databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 ```
 Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`energy_staging`),
@@ -62,6 +69,18 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
   `<base>/smard/filter=<id>/resolution=<res>/<ts>.json` (local `data/landing`, or
   `/Volumes/<catalog>/<schema>/landing` via `01_extract_smard`). Existing files are skipped;
   pass `--overwrite` / `overwrite=True` to refresh. Tests never hit the network.
+- **Pipeline (`resources/energy_pipeline.yml`):** serverless, channel CURRENT, catalog/schema
+  from bundle vars, sources globbed from `src/pipelines/**`. Use `from pyspark import pipelines
+  as dp`. `root_path: ../src` puts `energy_lakehouse` on `sys.path` (fallback: config key
+  `bundle.sourcePath`). Landing path comes from config key `landing_path`; session time zone is
+  UTC, local time is derived explicitly with `Europe/Berlin`. Keep Spark-free logic in
+  `transforms.py`; pipeline files only turn it into Spark expressions.
+- **Tables** (unqualified in pipeline code, resolved to `${var.catalog}.${var.schema}`):
+  `bronze_smard_raw` (one row per file) → `silver_energy_long` (one row per `filter_id`,
+  `timestamp_utc`; newest `file_modification_time` wins; expectations `value_published` drop,
+  `valid_timestamp` fail, `non_negative_energy` warn) → `gold_energy_hourly` (MWh summed,
+  EUR/MWh averaged per UTC hour) → `gold_energy_daily` (per Berlin calendar day, `hour_count`
+  23/24/25). Assumes one resolution per filter in the landing zone.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

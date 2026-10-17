@@ -32,3 +32,5 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # Databricks notebooks: `spark`/`dbutils` are injected globals; imports follow sys.path setup.
 "src/notebooks/*.py" = ["F821", "E402"]
+# Pipeline sources: `spark` is injected; energy_lakehouse imports follow the sys.path fallback.
+"src/pipelines/*.py" = ["F821", "E402"]
