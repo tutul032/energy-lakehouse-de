@@ -1,10 +1,13 @@
 """Offline tests for energy_lakehouse.transforms (no Spark)."""
 
+from datetime import date
+
 import pytest
 
-from energy_lakehouse import transforms
+from energy_lakehouse import transforms, weather
 from energy_lakehouse.smard import output_path
 from energy_lakehouse.smard_config import SERIES, SmardSeries
+from energy_lakehouse.weather_config import HOURLY_VARIABLES, LOCATIONS, WeatherLocation
 
 LOAD = SmardSeries(410, "total_load", "DE", "MWh")
 
@@ -77,3 +80,80 @@ def test_series_metadata_rows():
 def test_ddl_schema_escapes_quotes():
     ddl = transforms.ddl_schema([("a", "DOUBLE", "it's"), ("b", "DATE", "plain")])
     assert ddl == "a DOUBLE COMMENT 'it\\'s', b DATE COMMENT 'plain'"
+
+
+def test_parse_weather_landing_path_roundtrips_extractor_output():
+    loc = WeatherLocation("north_sea", "North Sea", 54.5, 6.5, "offshore_wind")
+    path = weather.output_path("/Volumes/workspace/energy_dev/landing", loc, date(2026, 10, 19))
+    assert transforms.parse_weather_landing_path(path) == ("north_sea", "2026-10-19")
+
+
+def test_parse_weather_landing_path_windows_separators():
+    path = r"data\landing\weather\location=essen\run_date=2026-01-02.json"
+    assert transforms.parse_weather_landing_path(path) == ("essen", "2026-01-02")
+
+
+def test_parse_weather_landing_path_rejects_other_files():
+    with pytest.raises(ValueError):
+        transforms.parse_weather_landing_path("/Volumes/x/landing/weather/location=essen/a.json")
+
+
+def test_weather_raw_schema_has_time_and_all_variables():
+    ddl = transforms.weather_raw_schema()
+    assert "hourly STRUCT<time: ARRAY<BIGINT>, temperature_2m: ARRAY<DOUBLE>," in ddl
+    for var in HOURLY_VARIABLES:
+        assert f"{var}: ARRAY<DOUBLE>" in ddl
+
+
+def test_weather_location_rows():
+    rows = transforms.weather_location_rows()
+    assert len(rows) == len(LOCATIONS)
+    assert rows[1] == ("north_sea", "North Sea", "offshore_wind")
+
+
+def test_weather_role_agg_specs_mapping():
+    specs = transforms.weather_role_agg_specs()
+    assert [(s.column, s.role, s.variable, s.func) for s in specs] == [
+        ("temperature_load_avg_c", "load", "temperature_2m", "avg"),
+        ("wind_speed_100m_onshore_avg_ms", "onshore_wind", "wind_speed_100m", "avg"),
+        ("wind_speed_100m_offshore_ms", "offshore_wind", "wind_speed_100m", "avg"),
+        ("shortwave_radiation_solar_avg_wm2", "solar", "shortwave_radiation", "avg"),
+    ]
+
+
+def test_weather_role_agg_specs_every_role_has_locations():
+    roles = {loc.role for loc in LOCATIONS}
+    assert {s.role for s in transforms.weather_role_agg_specs()} <= roles
+
+
+def test_weather_role_agg_specs_rejects_role_without_location():
+    only_load = [WeatherLocation("berlin", "Berlin", 52.52, 13.41, "load")]
+    with pytest.raises(ValueError, match="onshore_wind"):
+        transforms.weather_role_agg_specs(locations=only_load)
+
+
+def test_weather_role_agg_specs_rejects_unknown_variable_and_func():
+    bad_var = transforms.WeatherRoleAgg("x", "load", "humidity", "avg", "")
+    with pytest.raises(ValueError, match="humidity"):
+        transforms.weather_role_agg_specs(aggs=[bad_var])
+    bad_func = transforms.WeatherRoleAgg("x", "load", "temperature_2m", "sum", "")
+    with pytest.raises(ValueError, match="sum"):
+        transforms.weather_role_agg_specs(aggs=[bad_func])
+
+
+def test_weather_role_agg_specs_rejects_duplicate_columns():
+    agg = transforms.WEATHER_ROLE_AGGS[0]
+    with pytest.raises(ValueError, match="duplicate"):
+        transforms.weather_role_agg_specs(aggs=[agg, agg])
+
+
+def test_gold_weather_columns_extend_hourly_columns():
+    cols = transforms.gold_weather_columns()
+    names = [name for name, _, _ in cols]
+    assert names[: len(transforms.GOLD_HOURLY_COLUMNS)] == [
+        name for name, _, _ in transforms.GOLD_HOURLY_COLUMNS
+    ]
+    assert names[-4:] == [a.column for a in transforms.WEATHER_ROLE_AGGS]
+    assert ("hour_local", "TIMESTAMP_NTZ") in [(n, t) for n, t, _ in cols]
+    assert all(comment for _, _, comment in cols)
+    assert len(set(names)) == len(names)

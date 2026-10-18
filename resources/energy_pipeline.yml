@@ -1,6 +1,6 @@
 # Lakeflow Spark Declarative Pipeline: landing volume -> bronze -> silver -> gold.
 # Serverless only (no clusters). Tables land in ${var.catalog}.${var.schema}.
-# Run extract_smard_job first so the landing volume exists and holds files.
+# Run extract_smard_job and 02_extract_weather first so the landing volume holds both sources.
 resources:
   pipelines:
     energy_pipeline:
@@ -16,6 +16,7 @@ resources:
             include: ../src/pipelines/**
       configuration:
         landing_path: /Volumes/${var.catalog}/${var.schema}/landing/smard
+        weather_landing_path: /Volumes/${var.catalog}/${var.schema}/landing/weather
         # Fallback import path for energy_lakehouse (see src/pipelines/*.py).
         bundle.sourcePath: ${workspace.file_path}/src
         # Timestamps are computed in UTC; local time is derived explicitly (Europe/Berlin).

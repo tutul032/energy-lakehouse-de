@@ -28,6 +28,9 @@ def bronze_smard_raw():
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "json")
         .option("multiLine", "true")
+        # The extractor re-downloads the newest SMARD chunks in place; without this, Auto Loader
+        # ignores the rewritten files and late-published hours never reach silver.
+        .option("cloudFiles.allowOverwrites", "true")
         .schema(RAW_SCHEMA)
         .load(LANDING_PATH)
         # Explicit select: drops any Hive partition columns Auto Loader may add from the path.

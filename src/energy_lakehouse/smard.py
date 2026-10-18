@@ -11,13 +11,13 @@ from collections.abc import Callable, Iterable
 
 import requests
 
+from energy_lakehouse.http_utils import get_with_retry as _get
+from energy_lakehouse.http_utils import write_bytes as _write_bytes
 from energy_lakehouse.smard_config import SmardSeries
 
 BASE_URL = "https://www.smard.de/app/chart_data"
-REQUEST_TIMEOUT_S = 30
 PAUSE_S = 0.2
-MAX_ATTEMPTS = 3
-BACKOFF_S = 1.0
+DEFAULT_REFRESH_LATEST = 2
 
 log = logging.getLogger(__name__)
 
@@ -46,26 +46,17 @@ def select_timestamps(timestamps: Iterable[int], n_latest: int) -> list[int]:
     return sorted(set(timestamps))[-n_latest:]
 
 
-def _get(
-    session: requests.Session,
-    url: str,
-    max_attempts: int = MAX_ATTEMPTS,
-    backoff_s: float = BACKOFF_S,
-    sleep: Callable[[float], None] = time.sleep,
-) -> requests.Response:
-    """GET with up to ``max_attempts`` tries and exponential backoff (1 s, 2 s, ...)."""
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = session.get(url, timeout=REQUEST_TIMEOUT_S)
-            resp.raise_for_status()
-            return resp
-        except requests.RequestException as exc:
-            if attempt == max_attempts:
-                raise
-            delay = backoff_s * 2 ** (attempt - 1)
-            log.warning("attempt %d/%d failed for %s: %s", attempt, max_attempts, url, exc)
-            sleep(delay)
-    raise AssertionError("unreachable")
+def timestamps_to_refresh(timestamps: Iterable[int], refresh_latest: int) -> set[int]:
+    """The ``refresh_latest`` newest chunk timestamps, which are always re-downloaded.
+
+    SMARD publishes the current week's chunk incrementally (and occasionally revises the previous
+    one), so a file written earlier can be missing late-published hours.
+    """
+    if refresh_latest < 0:
+        raise ValueError("refresh_latest must be >= 0")
+    if refresh_latest == 0:
+        return set()
+    return set(sorted(set(timestamps))[-refresh_latest:])
 
 
 def fetch_index(
@@ -79,27 +70,25 @@ def fetch_index(
     return [int(ts) for ts in resp.json()["timestamps"]]
 
 
-def _write_bytes(path: str, data: bytes) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
-
-
 def extract(
     base_dir: str,
     series_list: Iterable[SmardSeries],
     resolution: str,
     n_latest: int,
     overwrite: bool = False,
+    refresh_latest: int = DEFAULT_REFRESH_LATEST,
     session: requests.Session | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, int]:
     """Download the latest ``n_latest`` chunks per series into ``base_dir``.
 
-    Raw JSON is written byte-for-byte. Existing files are skipped unless ``overwrite`` is set,
-    so re-runs are idempotent. Failures are logged and counted, not raised.
-    Returns ``{"written": n, "skipped": n, "failed": n}``.
+    Raw JSON is written byte-for-byte. The ``refresh_latest`` newest chunks per series are
+    always re-downloaded so late-published hours get filled; older existing files are skipped
+    unless ``overwrite`` is set, so re-runs stay idempotent for them. Failures are logged and
+    counted, not raised. Returns ``{"written": n, "skipped": n, "failed": n}``.
     """
+    if refresh_latest < 0:
+        raise ValueError("refresh_latest must be >= 0")
     session = session or requests.Session()
     summary = {"written": 0, "skipped": 0, "failed": 0}
 
@@ -114,9 +103,10 @@ def extract(
             continue
         sleep(PAUSE_S)
 
+        refresh = timestamps_to_refresh(timestamps, refresh_latest)
         for ts in timestamps:
             path = output_path(base_dir, series, resolution, ts)
-            if not overwrite and os.path.exists(path):
+            if not overwrite and ts not in refresh and os.path.exists(path):
                 log.info("SKIPPED %s", path)
                 summary["skipped"] += 1
                 continue

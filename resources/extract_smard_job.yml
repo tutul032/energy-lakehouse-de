@@ -12,6 +12,8 @@ resources:
           default: ${var.schema}
         - name: weeks
           default: "8"
+        - name: refresh_latest
+          default: "2"
       tasks:
         - task_key: extract_smard
           notebook_task:

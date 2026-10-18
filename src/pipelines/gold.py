@@ -11,6 +11,7 @@ if _src and _src not in sys.path:
     sys.path.append(_src)
 
 from energy_lakehouse.transforms import (
+    GOLD_HOURLY_COLUMNS,
     LOCAL_TZ,
     RENEWABLE_COLUMNS,
     ddl_schema,
@@ -20,20 +21,7 @@ from energy_lakehouse.transforms import (
 
 ENERGY_COLS = energy_columns()
 
-HOURLY_COLUMNS = [
-    ("hour_utc", "TIMESTAMP", "Start of the hour (UTC)."),
-    ("hour_local", "TIMESTAMP_NTZ", f"Start of the hour, local wall-clock time ({LOCAL_TZ})."),
-    ("total_load_mwh", "DOUBLE", "Total grid load in Germany (MWh)."),
-    ("price_eur_mwh", "DOUBLE", "Day-ahead price DE-LU, hourly average (EUR/MWh)."),
-    ("solar_mwh", "DOUBLE", "Solar (photovoltaics) generation (MWh)."),
-    ("wind_onshore_mwh", "DOUBLE", "Onshore wind generation (MWh)."),
-    ("wind_offshore_mwh", "DOUBLE", "Offshore wind generation (MWh)."),
-    ("lignite_mwh", "DOUBLE", "Lignite generation (MWh)."),
-    ("hard_coal_mwh", "DOUBLE", "Hard coal generation (MWh)."),
-    ("natural_gas_mwh", "DOUBLE", "Natural gas generation (MWh)."),
-    ("renewables_mwh", "DOUBLE", "Solar + onshore wind + offshore wind (MWh)."),
-    ("renewables_share", "DOUBLE", "renewables_mwh / total_load_mwh; NULL if load is 0 or NULL."),
-]
+HOURLY_COLUMNS = GOLD_HOURLY_COLUMNS
 
 DAILY_COLUMNS = [
     ("date_local", "DATE", f"Calendar day in {LOCAL_TZ}."),

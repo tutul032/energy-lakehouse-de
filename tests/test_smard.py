@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from energy_lakehouse import smard
+from energy_lakehouse import http_utils, smard
 from energy_lakehouse.smard_config import SERIES, SmardSeries
 
 FIXTURE = Path(__file__).parent / "fixtures" / "smard_chunk_410_DE_hour.json"
@@ -86,6 +86,17 @@ def test_select_timestamps_rejects_non_positive():
         smard.select_timestamps([1, 2], 0)
 
 
+def test_timestamps_to_refresh():
+    assert smard.timestamps_to_refresh([30, 10, 50, 20], 2) == {30, 50}
+    assert smard.timestamps_to_refresh([30, 10], 5) == {10, 30}
+    assert smard.timestamps_to_refresh([30, 10], 0) == set()
+
+
+def test_timestamps_to_refresh_rejects_negative():
+    with pytest.raises(ValueError):
+        smard.timestamps_to_refresh([1], -1)
+
+
 def test_fetch_index():
     session = FakeSession({smard.index_url(LOAD, "hour"): [index_response([1, 2, 3])]})
     assert smard.fetch_index(session, LOAD, "hour", sleep=no_sleep) == [1, 2, 3]
@@ -102,13 +113,17 @@ def test_extract_writes_raw_bytes_and_is_idempotent(tmp_path):
     )
     base = str(tmp_path)
 
-    first = smard.extract(base, [LOAD], "hour", 2, session=session, sleep=no_sleep)
+    first = smard.extract(
+        base, [LOAD], "hour", 2, refresh_latest=0, session=session, sleep=no_sleep
+    )
     assert first == {"written": 2, "skipped": 0, "failed": 0}
     written = Path(smard.output_path(base, LOAD, "hour", 300))
     assert written.read_bytes() == raw
 
     session.calls.clear()
-    second = smard.extract(base, [LOAD], "hour", 2, session=session, sleep=no_sleep)
+    second = smard.extract(
+        base, [LOAD], "hour", 2, refresh_latest=0, session=session, sleep=no_sleep
+    )
     assert second == {"written": 0, "skipped": 2, "failed": 0}
     assert session.calls == [smard.index_url(LOAD, "hour")]  # no chunk re-downloads
 
@@ -153,7 +168,7 @@ def test_extract_counts_failure_after_retries_exhausted(tmp_path):
     )
     summary = smard.extract(str(tmp_path), [LOAD], "hour", 2, session=session, sleep=no_sleep)
     assert summary == {"written": 1, "skipped": 0, "failed": 1}
-    assert session.calls.count(smard.chunk_url(LOAD, "hour", 100)) == smard.MAX_ATTEMPTS
+    assert session.calls.count(smard.chunk_url(LOAD, "hour", 100)) == http_utils.MAX_ATTEMPTS
     assert not Path(smard.output_path(str(tmp_path), LOAD, "hour", 100)).exists()
 
 
@@ -169,3 +184,33 @@ def test_extract_index_failure_is_counted_and_other_series_continue(tmp_path):
         str(tmp_path), [PRICE, LOAD], "hour", 1, session=session, sleep=no_sleep
     )
     assert summary == {"written": 1, "skipped": 0, "failed": 1}
+
+
+def test_extract_refreshes_newest_chunks_and_skips_older(tmp_path):
+    session = FakeSession(
+        {
+            smard.index_url(LOAD, "hour"): [index_response([100, 200, 300])],
+            smard.chunk_url(LOAD, "hour", 100): [FakeResponse(b"new-100")],
+            smard.chunk_url(LOAD, "hour", 200): [FakeResponse(b"new-200")],
+            smard.chunk_url(LOAD, "hour", 300): [FakeResponse(b"new-300")],
+        }
+    )
+    base = str(tmp_path)
+    for ts in (100, 200, 300):
+        path = Path(smard.output_path(base, LOAD, "hour", ts))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"old")
+
+    summary = smard.extract(base, [LOAD], "hour", 3, session=session, sleep=no_sleep)
+
+    assert summary == {"written": 2, "skipped": 1, "failed": 0}  # default refresh_latest=2
+    read = {
+        ts: Path(smard.output_path(base, LOAD, "hour", ts)).read_bytes() for ts in (100, 200, 300)
+    }
+    assert read == {100: b"old", 200: b"new-200", 300: b"new-300"}
+    assert smard.chunk_url(LOAD, "hour", 100) not in session.calls
+
+
+def test_extract_rejects_negative_refresh_latest(tmp_path):
+    with pytest.raises(ValueError):
+        smard.extract(str(tmp_path), [LOAD], "hour", 1, refresh_latest=-1, session=FakeSession({}))
