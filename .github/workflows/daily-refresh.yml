@@ -1,0 +1,57 @@
+name: daily-refresh
+
+# Free Edition has no outbound internet, so GitHub extracts SMARD + weather, uploads them to the
+# landing volume and triggers daily_refresh_job. Auth: service principal OAuth secret (M2M);
+# OIDC federation needs account-level APIs, which Free Edition lacks.
+on:
+  schedule:
+    - cron: "15 5 * * *" # 05:15 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_JOB_ID: ${{ vars.DATABRICKS_JOB_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - uses: databricks/setup-cli@main
+
+      - name: Extract and upload landing files
+        run: bash scripts/sync_landing.sh
+
+      - name: Run daily_refresh_job and wait
+        run: |
+          set -euo pipefail
+          [[ -n "${DATABRICKS_JOB_ID}" ]] || { echo "FAILED: repo variable DATABRICKS_JOB_ID is not set" >&2; exit 1; }
+          # run-now waits until the run terminates but exits 0 even if the run FAILED,
+          # so check the result state explicitly.
+          databricks jobs run-now "${DATABRICKS_JOB_ID}" --timeout 50m -o json > run.json
+          result="$(jq -r '.state.result_state // .status.termination_details.code // "UNKNOWN"' run.json)"
+          echo "run: $(jq -r '.run_page_url // "n/a"' run.json)"
+          echo "result: ${result}"
+          [[ "${result}" == "SUCCESS" ]] || { echo "FAILED: daily_refresh_job finished with ${result}" >&2; exit 1; }
+
+      - name: Upload extractor logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extract-logs-${{ github.run_id }}
+          path: data/landing/logs/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,7 +1,11 @@
 # Databricks Asset Bundle for energy-lakehouse-de.
-# Workspace host is NOT set here: it comes from the CLI profile (`-p free`).
+# Workspace host is set here (all targets); no `profile` so service-principal env-var auth
+# (CI) works. Locally, pass `-p free` on the command line.
 bundle:
   name: energy-lakehouse-de
+
+workspace:
+  host: https://dbc-405898bc-c90e.cloud.databricks.com
 
 include:
   - resources/*.yml
@@ -12,6 +16,10 @@ variables:
     default: workspace
   schema:
     description: Schema for this target (set per target).
+  refresh_sp_app_id:
+    description: Application ID of the service principal GitHub Actions uses to run daily_refresh_job.
+  alert_email:
+    description: Address notified when daily_refresh_job fails.
 
 targets:
   dev:
@@ -19,6 +27,8 @@ targets:
     default: true
     variables:
       schema: energy_dev
+      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
+      alert_email: REPLACE_WITH_ALERT_EMAIL
 
   staging:
     variables:

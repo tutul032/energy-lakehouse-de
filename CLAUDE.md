@@ -25,6 +25,7 @@ src/energy_lakehouse/       # pure, unit-tested Python package
   extract_local.py          #   CLI for local runs: --source {smard,weather,all}
   transforms.py             #   pipeline helpers: path regexes, agg rules, gold columns,
                             #   weather raw schema + role aggregation mapping
+  quality.py                #   daily-refresh quality checks (thresholds, CheckResult, raise)
 src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
   bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
   silver.py                 #   silver_energy_long (MV, exploded + deduped + expectations)
@@ -33,13 +34,16 @@ src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energ
   silver_weather.py         #   silver_weather_hourly (MV, arrays_zip + explode + dedupe)
   gold_weather.py           #   gold_energy_weather_hourly (MV, energy LEFT JOIN weather by role)
 src/notebooks/              # Databricks notebooks (source format .py)
+  03_quality_checks.py      #   quality_checks task of daily_refresh_job (uses quality.py)
 scripts/sync_landing.ps1    # local landing -> UC volume (fs cp per source, $LASTEXITCODE checks)
+scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
 docs/adr/                   # architecture decision records (NNNN-title.md)
 docs/tutorial/              # step-by-step labs (labN-*.md)
 docs/img/                   # screenshots: labN-stepNN-name.png
 .github/workflows/ci.yml    # lint + test (no deploy yet)
+.github/workflows/daily-refresh.yml  # 05:15 UTC: sync_landing.sh, then jobs run-now daily_refresh_job
 ```
 
 ## Commands (PowerShell)
@@ -59,6 +63,7 @@ databricks bundle run hello_job -t dev -p free
 databricks bundle run extract_smard_job -t dev -p free
 databricks bundle run energy_pipeline -t dev -p free                   # incremental update
 databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
+databricks bundle run daily_refresh_job -t dev -p free                 # pipeline + quality checks
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 ```
 Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`energy_staging`),
@@ -70,8 +75,10 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
 - **All tables live in catalog `workspace`**, schema per target via `${var.catalog}` /
   `${var.schema}`. Never hardcode a schema in notebooks/SQL; pass it as a job/pipeline parameter.
 - Build table names with `energy_lakehouse.utils.table_name()` (backtick-quoted names).
-- **No hardcoded hosts, tokens or secrets.** The host comes from the CLI profile; secrets go in
-  Databricks secret scopes (later: GitHub OIDC for CI deploys). `.env` is gitignored.
+- **No tokens or secrets in the repo.** The workspace host is set once in `databricks.yml`
+  (`workspace.host`, all targets); never set `profile` there (it breaks service-principal env-var
+  auth and CI). Locally pass `-p free`. Secrets go in Databricks secret scopes or GitHub
+  secrets. `.env` is gitignored.
 - **PowerShell-compatible commands** in docs and instructions: no bash-only syntax
   (`&&` in PS 5.1, `export`, `\` line continuations).
 - **Small, pure, testable functions in `src/energy_lakehouse/`**; notebooks stay thin and call
@@ -111,6 +118,17 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
   from `transforms.WEATHER_ROLE_AGGS`: role → variable → avg). Gold column lists with comments
   live in `transforms.py` (`GOLD_HOURLY_COLUMNS`, `gold_weather_columns()`); TIMESTAMP_NTZ
   columns need `table_properties={"delta.feature.timestampNtz": "supported"}`.
+- **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
+  federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with
+  `scripts/sync_landing.sh` and runs `databricks jobs run-now <vars.DATABRICKS_JOB_ID>`
+  (checks `result_state`, since run-now exits 0 on a FAILED run). Auth: service principal OAuth
+  secret (M2M) via GitHub secrets `DATABRICKS_HOST` / `DATABRICKS_CLIENT_ID` /
+  `DATABRICKS_CLIENT_SECRET`; no `-p` flag in CI. `daily_refresh_job` (no schedule): `run_pipeline`
+  (energy_pipeline, `full_refresh: false`) → `quality_checks` (`03_quality_checks.py`); fails on
+  gold_energy_hourly older than 72 h, no weather in gold_energy_weather_hourly in the last 7 days,
+  or empty silver tables. Bundle vars `refresh_sp_app_id` (job CAN_MANAGE_RUN) and `alert_email`
+  (on_failure) are set per target (dev only so far). The SP needs UC grants on the landing volume.
+  OIDC is used in the AWS chapter.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.
