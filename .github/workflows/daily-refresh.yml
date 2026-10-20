@@ -5,7 +5,7 @@ name: daily-refresh
 # OIDC federation needs account-level APIs, which Free Edition lacks.
 on:
   schedule:
-    - cron: "33 10 * * *" # 05:15 UTC daily
+    - cron: "17 5 * * *" # 05:15 UTC daily
   workflow_dispatch:
 
 concurrency:
