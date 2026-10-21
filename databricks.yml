@@ -1,6 +1,10 @@
 # Databricks Asset Bundle for energy-lakehouse-de.
 # Workspace host is set here (all targets); no `profile` so service-principal env-var auth
 # (CI) works. Locally, pass `-p free` on the command line.
+#
+# One Free Edition workspace hosts all targets. Raw files live once in the shared volume
+# ${var.landing_root}; each target builds its own tables in its own schema. staging and prod are
+# deployed only by CI as the CI/CD service principal (which owns energy_staging / energy_prod).
 bundle:
   name: energy-lakehouse-de
 
@@ -16,10 +20,15 @@ variables:
     default: workspace
   schema:
     description: Schema for this target (set per target).
+  landing_root:
+    description: Shared landing volume (all targets read raw files from <landing_root>/{smard,weather}).
+    default: /Volumes/workspace/energy_raw/landing
+  cicd_sp_app_id:
+    description: Application ID of the CI/CD service principal that deploys and runs staging/prod.
   refresh_sp_app_id:
     description: Application ID of the service principal GitHub Actions uses to run daily_refresh_job.
   alert_email:
-    description: Address notified when daily_refresh_job fails.
+    description: Address notified when daily_refresh_job fails (also the owner user in staging/prod).
 
 targets:
   dev:
@@ -27,16 +36,40 @@ targets:
     default: true
     variables:
       schema: energy_dev
+      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
       refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
       alert_email: REPLACE_WITH_ALERT_EMAIL
 
   staging:
+    mode: production
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.cicd_sp_app_id}
+    permissions:
+      - user_name: ${var.alert_email}
+        level: CAN_MANAGE
+      - service_principal_name: ${var.cicd_sp_app_id}
+        level: CAN_MANAGE
     variables:
       schema: energy_staging
+      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
+      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
+      alert_email: REPLACE_WITH_ALERT_EMAIL
 
   prod:
     mode: production
     workspace:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.cicd_sp_app_id}
+    permissions:
+      - user_name: ${var.alert_email}
+        level: CAN_MANAGE
+      - service_principal_name: ${var.cicd_sp_app_id}
+        level: CAN_MANAGE
     variables:
       schema: energy_prod
+      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
+      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
+      alert_email: REPLACE_WITH_ALERT_EMAIL

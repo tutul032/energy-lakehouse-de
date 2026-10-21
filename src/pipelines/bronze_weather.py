@@ -27,6 +27,9 @@ def bronze_weather_raw():
         .option("multiLine", "true")
         # `extract --overwrite` rewrites a run_date file in place; re-ingest it when that happens.
         .option("cloudFiles.allowOverwrites", "true")
+        # No partition inference: location_id/run_date come from _metadata.file_path below, and
+        # inferring key=value dirs fails (CF_PARTITON_INFERENCE_ERROR) on the shared landing path.
+        .option("cloudFiles.partitionColumns", "")
         .schema(weather_raw_schema())
         .load(WEATHER_LANDING_PATH)
         # Explicit select: drops any Hive partition columns Auto Loader may add from the path.

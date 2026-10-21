@@ -35,7 +35,7 @@ src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energ
   gold_weather.py           #   gold_energy_weather_hourly (MV, energy LEFT JOIN weather by role)
 src/notebooks/              # Databricks notebooks (source format .py)
   03_quality_checks.py      #   quality_checks task of daily_refresh_job (uses quality.py)
-scripts/sync_landing.ps1    # local landing -> UC volume (fs cp per source, $LASTEXITCODE checks)
+scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per source, $LASTEXITCODE checks)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
@@ -54,8 +54,8 @@ uv run ruff format .                       # format (CI runs --check)
 uv run pytest                              # unit tests (or: uv run python -m pytest)
 uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8 --past-days 63  # both
 uv run python -m energy_lakehouse.extract_local --source weather --past-days 63               # weather only
-.\scripts\sync_landing.ps1                 # upload data/landing/{smard,weather} to the volume + verify
-.\scripts\sync_landing.ps1 -Schema energy_staging -Sources weather -Overwrite
+.\scripts\sync_landing.ps1                 # upload data/landing/{smard,weather} to the shared volume + verify
+.\scripts\sync_landing.ps1 -Sources weather -Overwrite
 
 databricks bundle validate -t dev -p free
 databricks bundle deploy   -t dev -p free
@@ -65,9 +65,31 @@ databricks bundle run energy_pipeline -t dev -p free                   # increme
 databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
 databricks bundle run daily_refresh_job -t dev -p free                 # pipeline + quality checks
 databricks bundle destroy  -t dev -p free  # tear down dev resources
+databricks bundle validate -t staging -p free   # validate only; staging/prod deploy via CI
+databricks bundle validate -t prod    -p free
 ```
-Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`energy_staging`),
-`prod` (production mode, schema `energy_prod`, root `/Workspace/Shared/.bundle/<name>/<target>`).
+
+## Environments
+One Free Edition workspace. Raw files live once in the shared volume
+`/Volumes/workspace/energy_raw/landing/{smard,weather}` (bundle var `landing_root`); each target
+builds its own tables in its own schema.
+
+| Target | Mode | Schema | Identity (run_as / owner) | Who deploys | Root path |
+|---|---|---|---|---|---|
+| `dev` (default) | development | `energy_dev` | your user | you, locally (`-p free`) | `~/.bundle/<name>/dev` |
+| `staging` | production | `energy_staging` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Shared/.bundle/<name>/staging` |
+| `prod` | production | `energy_prod` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Shared/.bundle/<name>/prod` |
+
+- **staging/prod are deployed only by CI as the CI/CD SP.** Never `bundle deploy/run/destroy`
+  `-t staging` / `-t prod` locally; `bundle validate` is fine. Schemas `energy_staging` /
+  `energy_prod` exist already and are owned by the CI/CD SP; the bundle never creates them.
+- staging/prod permissions: `alert_email` user CAN_MANAGE, CI/CD SP CAN_MANAGE. The refresh SP
+  (`refresh_sp_app_id`) gets CAN_MANAGE_RUN on `daily_refresh_job` in every target.
+- Variables `cicd_sp_app_id`, `refresh_sp_app_id`, `alert_email` are set per target in
+  `databricks.yml` (placeholders `REPLACE_WITH_...` until filled in).
+- The landing volume is not managed by the bundle and not created by notebooks/scripts. Readers
+  (your user, CI/CD SP) need `READ VOLUME`, writers (refresh SP) `WRITE VOLUME` on
+  `workspace.energy_raw.landing`, plus `USE SCHEMA` on `workspace.energy_raw`.
 
 ## Conventions
 - **Serverless only.** Never add `new_cluster`, `job_clusters`, `existing_cluster_id` or cluster
@@ -84,8 +106,9 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
 - **Small, pure, testable functions in `src/energy_lakehouse/`**; notebooks stay thin and call
   them. Every new function gets a pytest test.
 - **SMARD landing:** raw chunk JSON is written unchanged to
-  `<base>/smard/filter=<id>/resolution=<res>/<ts>.json` (local `data/landing`, or
-  `/Volumes/<catalog>/<schema>/landing` via `01_extract_smard`). Existing files are skipped;
+  `<base>/smard/filter=<id>/resolution=<res>/<ts>.json` (local `data/landing`, or the shared
+  `/Volumes/workspace/energy_raw/landing` via `01_extract_smard`, widget/job parameter
+  `landing_root`). Existing files are skipped;
   pass `--overwrite` / `overwrite=True` to refresh. Exception: the `refresh_latest` newest chunks
   per series (default 2, `--refresh-latest`) are always re-downloaded so late-published hours get
   filled; bronze sets `cloudFiles.allowOverwrites` so Auto Loader re-ingests them. Tests never hit
@@ -94,13 +117,15 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
   `wind_speed_10m`, `wind_speed_100m`, `shortwave_radiation`, `cloud_cover`; UTC (`timezone=GMT`),
   `timeformat=unixtime`, wind in m/s, `past_days` 0–92 (default 63) + `forecast_days=1`. Raw JSON
   written unchanged to `<base>/weather/location=<id>/run_date=<yyyy-mm-dd>.json` (run date in UTC;
-  local or via `02_extract_weather`). Existing files skipped unless `--overwrite`. Consecutive runs
+  local or via `02_extract_weather` into the shared volume, widget `landing_root`). Existing files
+  skipped unless `--overwrite`. Consecutive runs
   overlap; `silver_weather_hourly` dedupes them. Not yet wired into a job (run the notebook).
 - **Pipeline (`resources/energy_pipeline.yml`):** serverless, channel CURRENT, catalog/schema
   from bundle vars, sources globbed from `src/pipelines/**`. Use `from pyspark import pipelines
   as dp`. `root_path: ../src` puts `energy_lakehouse` on `sys.path` (fallback: config key
-  `bundle.sourcePath`). Landing paths come from config keys `landing_path` (SMARD) and
-  `weather_landing_path`; session time zone is
+  `bundle.sourcePath`). Landing paths come from config keys `landing_path` (SMARD,
+  `${var.landing_root}/smard`) and `weather_landing_path` (`${var.landing_root}/weather`), the same
+  for all targets; session time zone is
   UTC, local time is derived explicitly with `Europe/Berlin`. Keep Spark-free logic in
   `transforms.py`; pipeline files only turn it into Spark expressions.
 - **Tables** (unqualified in pipeline code, resolved to `${var.catalog}.${var.schema}`):
@@ -124,10 +149,12 @@ Targets: `dev` (default, development mode, schema `energy_dev`), `staging` (`ene
   (checks `result_state`, since run-now exits 0 on a FAILED run). Auth: service principal OAuth
   secret (M2M) via GitHub secrets `DATABRICKS_HOST` / `DATABRICKS_CLIENT_ID` /
   `DATABRICKS_CLIENT_SECRET`; no `-p` flag in CI. `daily_refresh_job` (no schedule): `run_pipeline`
-  (energy_pipeline, `full_refresh: false`) → `quality_checks` (`03_quality_checks.py`); fails on
+  (energy_pipeline, `full_refresh: false`) → `quality_checks` (`03_quality_checks.py`, gets
+  `catalog`/`schema` from the job parameters via `base_parameters`); fails on
   gold_energy_hourly older than 72 h, no weather in gold_energy_weather_hourly in the last 7 days,
   or empty silver tables. Bundle vars `refresh_sp_app_id` (job CAN_MANAGE_RUN) and `alert_email`
-  (on_failure) are set per target (dev only so far). The SP needs UC grants on the landing volume.
+  (on_failure) are set per target. The SP needs UC grants on the shared landing volume.
+  The workflow currently triggers the dev job (`vars.DATABRICKS_JOB_ID`).
   OIDC is used in the AWS chapter.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs

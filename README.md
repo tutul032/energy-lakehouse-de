@@ -7,7 +7,7 @@ Every day at 05:15 UTC (or on demand via *Run workflow*), GitHub Actions refresh
 ```
 GitHub Actions (.github/workflows/daily-refresh.yml)
   1. extract_local --source all       SMARD + Open-Meteo -> data/landing on the runner
-  2. scripts/sync_landing.sh          databricks fs cp -r --overwrite -> /Volumes/workspace/<schema>/landing
+  2. scripts/sync_landing.sh          databricks fs cp -r --overwrite -> /Volumes/workspace/energy_raw/landing
                                       + databricks fs ls verification per source
   3. databricks jobs run-now <id>     waits; workflow fails unless result_state == SUCCESS
   4. upload data/landing/logs         extractor log as a workflow artifact
@@ -37,11 +37,13 @@ OIDC (keyless) auth is used in the AWS chapter, where account-level APIs are ava
    principals*) and generate an OAuth secret for it.
 2. Set `refresh_sp_app_id` (its application ID) and `alert_email` in the `dev` target of
    `databricks.yml`, then deploy: `databricks bundle deploy -t dev -p free`.
-3. Grant the service principal access to the landing volume (SQL editor):
+3. Grant the service principal access to the shared landing volume (SQL editor). All targets
+   read raw files from this one volume; the CI/CD service principal (which runs the staging/prod
+   pipelines) needs `READ VOLUME` on it too:
    ```sql
    GRANT USE CATALOG ON CATALOG workspace TO `<application-id>`;
-   GRANT USE SCHEMA ON SCHEMA workspace.energy_dev TO `<application-id>`;
-   GRANT READ VOLUME, WRITE VOLUME ON VOLUME workspace.energy_dev.landing TO `<application-id>`;
+   GRANT USE SCHEMA ON SCHEMA workspace.energy_raw TO `<application-id>`;
+   GRANT READ VOLUME, WRITE VOLUME ON VOLUME workspace.energy_raw.landing TO `<application-id>`;
    ```
 4. Find the job ID: `databricks jobs list -p free` (in dev mode the name is prefixed
    `[dev <user>]`).

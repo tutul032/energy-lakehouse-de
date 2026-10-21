@@ -31,6 +31,9 @@ def bronze_smard_raw():
         # The extractor re-downloads the newest SMARD chunks in place; without this, Auto Loader
         # ignores the rewritten files and late-published hours never reach silver.
         .option("cloudFiles.allowOverwrites", "true")
+        # No partition inference: filter_id/resolution come from _metadata.file_path below, and
+        # inferring key=value dirs fails (CF_PARTITON_INFERENCE_ERROR) on the shared landing path.
+        .option("cloudFiles.partitionColumns", "")
         .schema(RAW_SCHEMA)
         .load(LANDING_PATH)
         # Explicit select: drops any Hive partition columns Auto Loader may add from the path.

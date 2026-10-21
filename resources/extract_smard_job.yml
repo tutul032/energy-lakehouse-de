@@ -1,4 +1,4 @@
-# Downloads raw SMARD chunks into /Volumes/<catalog>/<schema>/landing.
+# Downloads raw SMARD chunks into the shared landing volume ${var.landing_root} (all targets).
 # No cluster definition: the notebook task runs on serverless compute. `requests` ships with the
 # serverless base environment, so no extra environment/dependency is declared.
 resources:
@@ -6,10 +6,8 @@ resources:
     extract_smard_job:
       name: extract_smard_job
       parameters:
-        - name: catalog
-          default: ${var.catalog}
-        - name: schema
-          default: ${var.schema}
+        - name: landing_root
+          default: ${var.landing_root}
         - name: weeks
           default: "8"
         - name: refresh_latest

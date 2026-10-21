@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Extract SMARD + weather locally, upload them to the UC landing volume and verify the upload.
+# Extract SMARD + weather locally, upload them to the shared UC landing volume and verify the upload.
 # Bash equivalent of sync_landing.ps1, used by .github/workflows/daily-refresh.yml.
 #
 # Auth comes from env vars (no -p flag): DATABRICKS_HOST, DATABRICKS_CLIENT_ID,
 # DATABRICKS_CLIENT_SECRET (service principal OAuth M2M). Locally you can set
 # DATABRICKS_CONFIG_PROFILE=free instead.
 #
-# Settings (env, optional): CATALOG (workspace), SCHEMA (energy_dev), LOCAL_DIR (data/landing),
-# SMARD_WEEKS (8), PAST_DAYS (63). The extractor log goes to $LOCAL_DIR/logs/.
+# Settings (env, optional): LANDING_ROOT (/Volumes/workspace/energy_raw/landing, shared by all
+# targets; must already exist), LOCAL_DIR (data/landing), SMARD_WEEKS (8), PAST_DAYS (63).
+# The extractor log goes to $LOCAL_DIR/logs/.
 #
 # Uploads use --overwrite so the re-downloaded newest SMARD chunks replace older copies; bronze
 # re-ingests overwritten files (cloudFiles.allowOverwrites) and silver dedupes them.
 #
 #   bash scripts/sync_landing.sh
-#   SCHEMA=energy_staging bash scripts/sync_landing.sh
+#   LANDING_ROOT=/Volumes/workspace/energy_raw/landing bash scripts/sync_landing.sh
 set -euo pipefail
 
-CATALOG="${CATALOG:-workspace}"
-SCHEMA="${SCHEMA:-energy_dev}"
+LANDING_ROOT="${LANDING_ROOT:-/Volumes/workspace/energy_raw/landing}"
 LOCAL_DIR="${LOCAL_DIR:-data/landing}"
 SMARD_WEEKS="${SMARD_WEEKS:-8}"
 PAST_DAYS="${PAST_DAYS:-63}"
@@ -48,7 +48,7 @@ if [[ -z "${DATABRICKS_CONFIG_PROFILE:-}" ]]; then
 fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-volume_base="dbfs:/Volumes/${CATALOG}/${SCHEMA}/landing"
+volume_base="dbfs:${LANDING_ROOT%/}"
 
 # 1. Extract (both sources). pipefail makes a failed extractor fail the script despite tee.
 mkdir -p "${LOCAL_DIR}/logs"
