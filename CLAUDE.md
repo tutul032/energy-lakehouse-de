@@ -42,8 +42,10 @@ data/                       # local landing output (gitignored)
 docs/adr/                   # architecture decision records (NNNN-title.md)
 docs/tutorial/              # step-by-step labs (labN-*.md)
 docs/img/                   # screenshots: labN-stepNN-name.png
-.github/workflows/ci.yml    # lint + test (no deploy yet)
-.github/workflows/daily-refresh.yml  # 05:15 UTC: sync_landing.sh, then jobs run-now daily_refresh_job
+.github/workflows/ci.yml    # PR + push master (+ workflow_call): lint, test, bundle validate staging/prod
+.github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
+.github/workflows/deploy-prod.yml    # release v*: env production (approval) -> deploy prod -> summary
+.github/workflows/daily-refresh.yml  # 05:17 UTC: sync_landing.sh, then jobs run-now prod daily_refresh_job
 ```
 
 ## Commands (PowerShell)
@@ -154,7 +156,8 @@ builds its own tables in its own schema.
   gold_energy_hourly older than 72 h, no weather in gold_energy_weather_hourly in the last 7 days,
   or empty silver tables. Bundle vars `refresh_sp_app_id` (job CAN_MANAGE_RUN) and `alert_email`
   (on_failure) are set per target. The SP needs UC grants on the shared landing volume.
-  The workflow currently triggers the dev job (`vars.DATABRICKS_JOB_ID`).
+  The workflow triggers the prod job (`vars.DATABRICKS_JOB_ID` = prod job id). CI/CD deploys
+  use secrets `DATABRICKS_CICD_CLIENT_ID` / `DATABRICKS_CICD_CLIENT_SECRET` (+ `DATABRICKS_HOST`).
   OIDC is used in the AWS chapter.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs

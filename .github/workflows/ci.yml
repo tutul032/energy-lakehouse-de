@@ -1,12 +1,24 @@
 name: ci
 
+# Lint + unit tests, then validate the staging/prod bundle as the CI/CD service principal.
+# Also callable (workflow_call) so deploy-staging.yml reuses exactly these steps as its gate.
 on:
-  push:
   pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
+    env:
+      # CI/CD SP, OAuth M2M; no profile (the CLI picks these env vars up directly).
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CICD_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CICD_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -16,4 +28,8 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest
-# Databricks deploy (OIDC) will be added in a later lab.
+      - uses: databricks/setup-cli@main
+      - name: Validate bundle (staging)
+        run: databricks bundle validate -t staging
+      - name: Validate bundle (prod)
+        run: databricks bundle validate -t prod
