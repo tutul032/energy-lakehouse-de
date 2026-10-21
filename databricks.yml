@@ -36,9 +36,9 @@ targets:
     default: true
     variables:
       schema: energy_dev
-      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
-      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
-      alert_email: REPLACE_WITH_ALERT_EMAIL
+      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
+      alert_email: rezaul.tutul@yahoo.com
 
   staging:
     mode: production
@@ -53,9 +53,9 @@ targets:
         level: CAN_MANAGE
     variables:
       schema: energy_staging
-      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
-      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
-      alert_email: REPLACE_WITH_ALERT_EMAIL
+      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
+      alert_email: rezaul.tutul@yahoo.com
 
   prod:
     mode: production
@@ -70,6 +70,6 @@ targets:
         level: CAN_MANAGE
     variables:
       schema: energy_prod
-      cicd_sp_app_id: REPLACE_WITH_CICD_SP_APPLICATION_ID
-      refresh_sp_app_id: REPLACE_WITH_SP_APPLICATION_ID
-      alert_email: REPLACE_WITH_ALERT_EMAIL
+      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
+      alert_email: rezaul.tutul@yahoo.com
