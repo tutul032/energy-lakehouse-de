@@ -79,13 +79,15 @@ builds its own tables in its own schema.
 | Target | Mode | Schema | Identity (run_as / owner) | Who deploys | Root path |
 |---|---|---|---|---|---|
 | `dev` (default) | development | `energy_dev` | your user | you, locally (`-p free`) | `~/.bundle/<name>/dev` |
-| `staging` | production | `energy_staging` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Shared/.bundle/<name>/staging` |
-| `prod` | production | `energy_prod` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Shared/.bundle/<name>/prod` |
+| `staging` | production | `energy_staging` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/staging` |
+| `prod` | production | `energy_prod` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/prod` |
 
 - **staging/prod are deployed only by CI as the CI/CD SP.** Never `bundle deploy/run/destroy`
   `-t staging` / `-t prod` locally; `bundle validate` is fine. Schemas `energy_staging` /
   `energy_prod` exist already and are owned by the CI/CD SP; the bundle never creates them.
-- staging/prod permissions: `alert_email` user CAN_MANAGE, CI/CD SP CAN_MANAGE. The refresh SP
+- staging/prod root path is `/Workspace/Users/${workspace.current_user.userName}/...`; `<deployer>`
+  is the CI/CD SP's application ID in CI, so the folder is private to it.
+- staging/prod permissions: CI/CD SP CAN_MANAGE, `alert_email` user CAN_MANAGE. The refresh SP
   (`refresh_sp_app_id`) gets CAN_MANAGE_RUN on `daily_refresh_job` in every target.
 - Variables `cicd_sp_app_id`, `refresh_sp_app_id`, `alert_email` are set per target in
   `databricks.yml` (placeholders `REPLACE_WITH_...` until filled in).
