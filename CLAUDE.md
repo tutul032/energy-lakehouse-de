@@ -76,17 +76,19 @@ One Free Edition workspace. Raw files live once in the shared volume
 `/Volumes/workspace/energy_raw/landing/{smard,weather}` (bundle var `landing_root`); each target
 builds its own tables in its own schema.
 
-| Target | Mode | Schema | Identity (run_as / owner) | Who deploys | Root path |
-|---|---|---|---|---|---|
-| `dev` (default) | development | `energy_dev` | your user | you, locally (`-p free`) | `~/.bundle/<name>/dev` |
-| `staging` | production | `energy_staging` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/staging` |
-| `prod` | production | `energy_prod` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/prod` |
+| Target | Mode | Schema | Identity (run_as / owner) | Who deploys | Root path | Name prefix |
+|---|---|---|---|---|---|---|
+| `dev` (default) | development | `energy_dev` | your user | you, locally (`-p free`) | `~/.bundle/<name>/dev` | `[dev <user>] ` (development mode) |
+| `staging` | production | `energy_staging` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/staging` | `[staging] ` (`presets.name_prefix`) |
+| `prod` | production | `energy_prod` | CI/CD SP (`cicd_sp_app_id`) | CI only, as the CI/CD SP | `/Workspace/Users/<deployer>/.bundle/<name>/prod` | `[prod] ` (`presets.name_prefix`) |
 
 - **staging/prod are deployed only by CI as the CI/CD SP.** Never `bundle deploy/run/destroy`
   `-t staging` / `-t prod` locally; `bundle validate` is fine. Schemas `energy_staging` /
   `energy_prod` exist already and are owned by the CI/CD SP; the bundle never creates them.
 - staging/prod root path is `/Workspace/Users/${workspace.current_user.userName}/...`; `<deployer>`
   is the CI/CD SP's application ID in CI, so the folder is private to it.
+- Resource names are prefixed per target because all targets share one workspace (unprefixed
+  staging/prod names collide, 409). Not needed with one workspace per target.
 - staging/prod permissions: CI/CD SP CAN_MANAGE, `alert_email` user CAN_MANAGE. The refresh SP
   (`refresh_sp_app_id`) gets CAN_MANAGE_RUN on `daily_refresh_job` in every target.
 - Variables `cicd_sp_app_id`, `refresh_sp_app_id`, `alert_email` are set per target in
