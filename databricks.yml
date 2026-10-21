@@ -36,7 +36,7 @@ targets:
     default: true
     variables:
       schema: energy_dev
-      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      cicd_sp_app_id: 7d0f1e32-4a86-42e2-b352-461dae1b3634
       refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
       alert_email: rezaul.tutul@yahoo.com
 
@@ -54,7 +54,7 @@ targets:
         level: CAN_MANAGE
     variables:
       schema: energy_staging
-      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      cicd_sp_app_id: 7d0f1e32-4a86-42e2-b352-461dae1b3634
       refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
       alert_email: rezaul.tutul@yahoo.com
 
@@ -72,6 +72,6 @@ targets:
         level: CAN_MANAGE
     variables:
       schema: energy_prod
-      cicd_sp_app_id: dose7688b41415448b428fc5f4355f87699d
+      cicd_sp_app_id: 7d0f1e32-4a86-42e2-b352-461dae1b3634
       refresh_sp_app_id: e1370f9f-0819-48ba-92f0-365c18361518
       alert_email: rezaul.tutul@yahoo.com
