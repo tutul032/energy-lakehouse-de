@@ -43,13 +43,14 @@ targets:
   staging:
     mode: production
     workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.cicd_sp_app_id}
     permissions:
-      - user_name: ${var.alert_email}
-        level: CAN_MANAGE
       - service_principal_name: ${var.cicd_sp_app_id}
+        level: CAN_MANAGE
+      - user_name: ${var.alert_email}
         level: CAN_MANAGE
     variables:
       schema: energy_staging
@@ -60,13 +61,14 @@ targets:
   prod:
     mode: production
     workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+      # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.cicd_sp_app_id}
     permissions:
-      - user_name: ${var.alert_email}
-        level: CAN_MANAGE
       - service_principal_name: ${var.cicd_sp_app_id}
+        level: CAN_MANAGE
+      - user_name: ${var.alert_email}
         level: CAN_MANAGE
     variables:
       schema: energy_prod
