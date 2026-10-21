@@ -42,6 +42,10 @@ targets:
 
   staging:
     mode: production
+    # One shared workspace: prefix names so staging/prod resources don't collide (409 "already
+    # used"). In a multi-workspace setup (one workspace per target) the prefix would not be needed.
+    presets:
+      name_prefix: "[staging] "
     workspace:
       # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
@@ -60,6 +64,10 @@ targets:
 
   prod:
     mode: production
+    # One shared workspace: prefix names so staging/prod resources don't collide (409 "already
+    # used"). In a multi-workspace setup (one workspace per target) the prefix would not be needed.
+    presets:
+      name_prefix: "[prod] "
     workspace:
       # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
