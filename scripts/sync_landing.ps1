@@ -1,25 +1,25 @@
 <#
 .SYNOPSIS
-    Upload the local landing zone (SMARD + weather) to the UC volume and verify it.
+    Upload the local landing zone (SMARD + weather) to the shared UC landing volume and verify it.
 
 .DESCRIPTION
     For each source (default: smard, weather) copies data/landing/<source> recursively to
-    dbfs:/Volumes/<Catalog>/<Schema>/landing/<source>. Every databricks call is checked via
-    $LASTEXITCODE; the script stops with a clear error on the first failure. At the end each
+    dbfs:<LandingRoot>/<source> (default /Volumes/workspace/energy_raw/landing, shared by all
+    targets; each target's pipeline builds its own tables from it). Every databricks call is
+    checked via $LASTEXITCODE; the script stops with a clear error on the first failure. At the end each
     target is listed with `databricks fs ls` and the script fails if any target is empty.
 
-    The landing volume must exist (run extract_smard_job or 02_extract_weather once, or
-    CREATE VOLUME workspace.<schema>.landing).
+    The landing volume must already exist (created once, e.g. CREATE VOLUME
+    workspace.energy_raw.landing); this script does not create it.
 
 .EXAMPLE
     .\scripts\sync_landing.ps1
-    .\scripts\sync_landing.ps1 -Schema energy_staging -Sources weather
+    .\scripts\sync_landing.ps1 -Sources weather
     .\scripts\sync_landing.ps1 -Overwrite   # also replace files that already exist in the volume
 #>
 [CmdletBinding()]
 param(
-    [string]$Catalog = "workspace",
-    [string]$Schema = "energy_dev",
+    [string]$LandingRoot = "/Volumes/workspace/energy_raw/landing",
     [string]$Profile = "free",
     [string]$LocalDir = "data/landing",
     [ValidateSet("smard", "weather")]
@@ -50,7 +50,7 @@ if (-not (Get-Command databricks -ErrorAction SilentlyContinue)) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $localBase = if ([System.IO.Path]::IsPathRooted($LocalDir)) { $LocalDir } else { Join-Path $repoRoot $LocalDir }
-$volumeBase = "dbfs:/Volumes/$Catalog/$Schema/landing"
+$volumeBase = "dbfs:$($LandingRoot.TrimEnd('/'))"
 
 # Check every local source before uploading anything, so a missing folder is not silently skipped.
 foreach ($source in $Sources) {

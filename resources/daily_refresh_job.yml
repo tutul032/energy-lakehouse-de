@@ -1,7 +1,9 @@
 # Daily refresh: energy_pipeline update, then quality checks on silver/gold.
 # No schedule: GitHub Actions (.github/workflows/daily-refresh.yml) uploads fresh landing files
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
-# principal (OAuth M2M). No cluster definition: tasks run on serverless compute.
+# principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
+# CAN_MANAGE to the owner user and CI/CD SP via databricks.yml). No cluster definition: tasks run
+# on serverless compute. quality_checks reads the target schema from the job parameters.
 resources:
   jobs:
     daily_refresh_job:
@@ -24,6 +26,9 @@ resources:
             - task_key: run_pipeline
           notebook_task:
             notebook_path: ../src/notebooks/03_quality_checks.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
       permissions:
         - service_principal_name: ${var.refresh_sp_app_id}
           level: CAN_MANAGE_RUN
