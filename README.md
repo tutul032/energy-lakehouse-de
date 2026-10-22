@@ -63,6 +63,8 @@ Databricks Free Edition: prod daily_refresh_job (serverless, no schedule)
                    - gold_energy_hourly max(hour_utc) at most 72 h old
                    - gold_energy_weather_hourly has weather in the last 7 days
                    - silver_energy_long and silver_weather_hourly not empty
+  apply_contracts  src/notebooks/04_apply_contracts.py: comments, tags, grants from contracts/
+  verify_contracts src/notebooks/05_verify_contracts.py: schema, quality rules, freshness SLA
   on failure       email to ${var.alert_email}
 ```
 
@@ -97,3 +99,32 @@ OIDC (keyless) auth is used in the AWS chapter, where account-level APIs are ava
 
 The job runs the pipeline as its owner (the CI/CD service principal in prod); the service principal only needs `CAN_MANAGE_RUN` on the
 job (set by the bundle) plus the volume grants above.
+
+## Data products
+
+Each gold table is a data product with a contract in [`contracts/`](contracts/) (schema, grain,
+owner, freshness SLA, quality rules, tags, consumer groups). The product pages are generated from
+the contracts:
+
+| Data product | Table | Contract |
+|---|---|---|
+| [Energy market, hourly](docs/data-products/gold_energy_hourly.md) | `gold_energy_hourly` | [`gold_energy_hourly.yaml`](contracts/gold_energy_hourly.yaml) |
+| [Energy market, daily](docs/data-products/gold_energy_daily.md) | `gold_energy_daily` | [`gold_energy_daily.yaml`](contracts/gold_energy_daily.yaml) |
+| [Energy + weather, hourly](docs/data-products/gold_energy_weather_hourly.md) | `gold_energy_weather_hourly` | [`gold_energy_weather_hourly.yaml`](contracts/gold_energy_weather_hourly.yaml) |
+
+After every refresh, `daily_refresh_job` applies each contract (`apply_contracts`: comments,
+tags, `GRANT SELECT` to the consumer groups) and verifies it (`verify_contracts`: columns and
+types via `information_schema`, quality rules, freshness); a violation fails the job.
+
+**Changing a contract:** edit `contracts/<table>.yaml` in a pull request, bump `version`
+(semver) and regenerate the pages with `uv run python scripts/render_contract_docs.py`.
+
+| Change | Version bump |
+|---|---|
+| Remove or rename a column, change a column type | MAJOR (`1.4.2` → `2.0.0`) |
+| Add a column | MINOR (`1.4.2` → `1.5.0`) |
+| Descriptions, quality rules, tags, SLA wording | PATCH (`1.4.2` → `1.4.3`) |
+
+The gold column lists live in `src/energy_lakehouse/transforms.py`; `tests/test_contracts.py`
+fails if a contract and the pipeline disagree on columns, types or descriptions, so a pipeline
+change cannot silently break consumers.

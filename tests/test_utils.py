@@ -1,6 +1,6 @@
 import pytest
 
-from energy_lakehouse.utils import table_name
+from energy_lakehouse.utils import quote_identifier, table_name
 
 
 def test_three_part_name():
@@ -28,3 +28,8 @@ def test_backticks_are_escaped():
 def test_empty_parts_rejected(catalog, schema, table):
     with pytest.raises(ValueError):
         table_name(catalog, schema, table)
+
+
+def test_quote_identifier_handles_hyphens_and_backticks():
+    assert quote_identifier("energy-consumers") == "`energy-consumers`"
+    assert quote_identifier("a`b") == "`a``b`"

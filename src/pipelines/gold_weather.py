@@ -11,23 +11,21 @@ if _src and _src not in sys.path:
     sys.path.append(_src)
 
 from energy_lakehouse.transforms import (
-    GOLD_HOURLY_COLUMNS,
+    GOLD_ENERGY_HOURLY_COLUMNS,
+    GOLD_ENERGY_WEATHER_HOURLY_COLUMNS,
+    GOLD_TABLE_COMMENTS,
     ddl_schema,
-    gold_weather_columns,
     weather_role_agg_specs,
 )
 
 WEATHER_SPECS = weather_role_agg_specs()
-COLUMNS = gold_weather_columns(WEATHER_SPECS)
+# Built from WEATHER_ROLE_AGGS in transforms.py; also the column list of the data contract.
+COLUMNS = GOLD_ENERGY_WEATHER_HOURLY_COLUMNS
 
 
 @dp.materialized_view(
     name="gold_energy_weather_hourly",
-    comment=(
-        "gold_energy_hourly (one row per UTC hour) left-joined with Open-Meteo weather "
-        "aggregated by location role: load-centre temperature, onshore/offshore 100 m wind, "
-        "solar radiation. Weather columns are NULL where no observation exists yet."
-    ),
+    comment=GOLD_TABLE_COMMENTS["gold_energy_weather_hourly"],
     schema=ddl_schema(COLUMNS),
     # hour_local is TIMESTAMP_NTZ; Delta requires the timestampNtz table feature to be enabled
     # explicitly (else DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT).
@@ -46,7 +44,7 @@ def gold_energy_weather_hourly():
     )
     return (
         spark.read.table("gold_energy_hourly")
-        .select(*[name for name, _, _ in GOLD_HOURLY_COLUMNS])
+        .select(*[name for name, _, _ in GOLD_ENERGY_HOURLY_COLUMNS])
         .join(weather, "hour_utc", "left")
         .select(*[name for name, _, _ in COLUMNS])
     )

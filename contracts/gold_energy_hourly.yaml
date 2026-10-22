@@ -1,0 +1,46 @@
+# Data contract for gold_energy_hourly (ODCS-inspired). Column names/types/descriptions must
+# match GOLD_ENERGY_HOURLY_COLUMNS in src/energy_lakehouse/transforms.py (tests/test_contracts.py).
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+apiVersion: v1
+kind: DataContract
+id: energy.gold_energy_hourly
+version: 1.0.0
+status: active
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Hourly German power load, day-ahead price and generation mix (SMARD, CC BY 4.0). One row per UTC hour."
+table: gold_energy_hourly            # catalog/schema come from the target
+object_type: materialized_view
+grain: one row per hour_utc
+primary_key: [hour_utc]
+tags: {layer: gold, domain: energy, data_product: energy_market_hourly, license: CC-BY-4.0, source: smard}
+sla: {freshness_hours: 72, freshness_column: hour_utc, schedule: "daily ~05:17 UTC"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: hour_utc, type: TIMESTAMP, nullable: false, description: "Start of the hour (UTC)."}
+  - {name: hour_local, type: TIMESTAMP_NTZ, nullable: false, description: "Start of the hour, local wall-clock time (Europe/Berlin)."}
+  - {name: total_load_mwh, type: DOUBLE, description: "Total grid load in Germany (MWh)."}
+  - {name: price_eur_mwh, type: DOUBLE, description: "Day-ahead price DE-LU, hourly average (EUR/MWh)."}
+  - {name: solar_mwh, type: DOUBLE, description: "Solar (photovoltaics) generation (MWh)."}
+  - {name: wind_onshore_mwh, type: DOUBLE, description: "Onshore wind generation (MWh)."}
+  - {name: wind_offshore_mwh, type: DOUBLE, description: "Offshore wind generation (MWh)."}
+  - {name: lignite_mwh, type: DOUBLE, description: "Lignite generation (MWh)."}
+  - {name: hard_coal_mwh, type: DOUBLE, description: "Hard coal generation (MWh)."}
+  - {name: natural_gas_mwh, type: DOUBLE, description: "Natural gas generation (MWh)."}
+  - {name: renewables_mwh, type: DOUBLE, description: "Solar + onshore wind + offshore wind (MWh)."}
+  - {name: renewables_share, type: DOUBLE, description: "renewables_mwh / total_load_mwh; NULL if load is 0 or NULL."}
+quality:
+  - {name: unique_hour, type: unique, columns: [hour_utc]}
+  # Up to 1.5, not 1: on sunny, windy, low-load hours German renewables exceed the load (exports).
+  - {name: share_in_range, type: row_condition, sql: "renewables_share IS NULL OR renewables_share BETWEEN 0 AND 1.5", max_violation_pct: 0}
+  - {name: load_plausible, type: row_condition, sql: "total_load_mwh IS NULL OR total_load_mwh BETWEEN 20000 AND 100000", max_violation_pct: 1}
+  # SDAC harmonised clearing price limits.
+  - {name: price_in_market_limits, type: row_condition, sql: "price_eur_mwh IS NULL OR price_eur_mwh BETWEEN -500 AND 4000", max_violation_pct: 0}
+  # silver_energy_long only warns on negative energy; tolerate rare publication glitches here.
+  - name: generation_non_negative
+    type: row_condition
+    sql: >-
+      coalesce(solar_mwh, 0) >= 0 AND coalesce(wind_onshore_mwh, 0) >= 0
+      AND coalesce(wind_offshore_mwh, 0) >= 0 AND coalesce(lignite_mwh, 0) >= 0
+      AND coalesce(hard_coal_mwh, 0) >= 0 AND coalesce(natural_gas_mwh, 0) >= 0
+    max_violation_pct: 1

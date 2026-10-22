@@ -150,8 +150,8 @@ def test_weather_role_agg_specs_rejects_duplicate_columns():
 def test_gold_weather_columns_extend_hourly_columns():
     cols = transforms.gold_weather_columns()
     names = [name for name, _, _ in cols]
-    assert names[: len(transforms.GOLD_HOURLY_COLUMNS)] == [
-        name for name, _, _ in transforms.GOLD_HOURLY_COLUMNS
+    assert names[: len(transforms.GOLD_ENERGY_HOURLY_COLUMNS)] == [
+        name for name, _, _ in transforms.GOLD_ENERGY_HOURLY_COLUMNS
     ]
     assert names[-4:] == [a.column for a in transforms.WEATHER_ROLE_AGGS]
     assert ("hour_local", "TIMESTAMP_NTZ") in [(n, t) for n, t, _ in cols]

@@ -1,0 +1,45 @@
+# Data contract for gold_energy_daily (ODCS-inspired). Column names/types/descriptions must
+# match GOLD_ENERGY_DAILY_COLUMNS in src/energy_lakehouse/transforms.py (tests/test_contracts.py).
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+apiVersion: v1
+kind: DataContract
+id: energy.gold_energy_daily
+version: 1.0.0
+status: active
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Daily German energy totals and price statistics per Europe/Berlin calendar day (SMARD, CC BY 4.0). One row per local day."
+table: gold_energy_daily             # catalog/schema come from the target
+object_type: materialized_view
+grain: one row per date_local (Europe/Berlin calendar day)
+primary_key: [date_local]
+tags: {layer: gold, domain: energy, data_product: energy_market_daily, license: CC-BY-4.0, source: smard}
+# max(date_local) counts from 00:00 UTC of the newest day, so 96 h here matches 72 h on hour_utc.
+sla: {freshness_hours: 96, freshness_column: date_local, schedule: "daily ~05:17 UTC"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: date_local, type: DATE, nullable: false, description: "Calendar day in Europe/Berlin."}
+  - {name: total_load_mwh, type: DOUBLE, description: "Daily sum of total_load_mwh (MWh)."}
+  - {name: solar_mwh, type: DOUBLE, description: "Daily sum of solar_mwh (MWh)."}
+  - {name: wind_onshore_mwh, type: DOUBLE, description: "Daily sum of wind_onshore_mwh (MWh)."}
+  - {name: wind_offshore_mwh, type: DOUBLE, description: "Daily sum of wind_offshore_mwh (MWh)."}
+  - {name: lignite_mwh, type: DOUBLE, description: "Daily sum of lignite_mwh (MWh)."}
+  - {name: hard_coal_mwh, type: DOUBLE, description: "Daily sum of hard_coal_mwh (MWh)."}
+  - {name: natural_gas_mwh, type: DOUBLE, description: "Daily sum of natural_gas_mwh (MWh)."}
+  - {name: renewables_mwh, type: DOUBLE, description: "Daily sum of renewables_mwh (MWh)."}
+  - {name: price_avg_eur_mwh, type: DOUBLE, description: "Average hourly day-ahead price (EUR/MWh)."}
+  - {name: price_min_eur_mwh, type: DOUBLE, description: "Lowest hourly day-ahead price (EUR/MWh)."}
+  - {name: price_max_eur_mwh, type: DOUBLE, description: "Highest hourly day-ahead price (EUR/MWh)."}
+  - {name: renewables_share_avg, type: DOUBLE, description: "Average of the hourly renewables_share."}
+  - {name: hour_count, type: BIGINT, nullable: false, description: "Hours in the day: 24, or 23/25 on DST change days."}
+quality:
+  - {name: unique_day, type: unique, columns: [date_local]}
+  # The newest 2 days may be incomplete (tomorrow's day-ahead prices, publication delay).
+  - name: complete_days
+    type: row_condition
+    sql: "hour_count BETWEEN 23 AND 25"
+    where: "date_local < (SELECT date_sub(max(date_local), 1) FROM {table})"
+    max_violation_pct: 0
+  # Small tolerance: the average of equal prices can differ from them by floating-point rounding.
+  - {name: price_stats_ordered, type: row_condition, sql: "price_avg_eur_mwh IS NULL OR (price_min_eur_mwh <= price_avg_eur_mwh + 0.001 AND price_avg_eur_mwh <= price_max_eur_mwh + 0.001)", max_violation_pct: 0}
+  - {name: share_avg_in_range, type: row_condition, sql: "renewables_share_avg IS NULL OR renewables_share_avg BETWEEN 0 AND 1.5", max_violation_pct: 0}

@@ -1,0 +1,41 @@
+# Data contract for gold_energy_weather_hourly (ODCS-inspired). Column names/types/descriptions
+# must match GOLD_ENERGY_WEATHER_HOURLY_COLUMNS in src/energy_lakehouse/transforms.py.
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+apiVersion: v1
+kind: DataContract
+id: energy.gold_energy_weather_hourly
+version: 1.0.0
+status: active
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "gold_energy_hourly left-joined with Open-Meteo weather aggregated by location role: load-centre temperature, onshore/offshore 100 m wind, solar radiation (SMARD + Open-Meteo, CC BY 4.0). Weather columns are NULL where no observation exists yet."
+table: gold_energy_weather_hourly    # catalog/schema come from the target
+object_type: materialized_view
+grain: one row per hour_utc
+primary_key: [hour_utc]
+tags: {layer: gold, domain: energy, data_product: energy_weather_hourly, license: CC-BY-4.0, source: smard+open-meteo}
+sla: {freshness_hours: 72, freshness_column: hour_utc, schedule: "daily ~05:17 UTC"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: hour_utc, type: TIMESTAMP, nullable: false, description: "Start of the hour (UTC)."}
+  - {name: hour_local, type: TIMESTAMP_NTZ, nullable: false, description: "Start of the hour, local wall-clock time (Europe/Berlin)."}
+  - {name: total_load_mwh, type: DOUBLE, description: "Total grid load in Germany (MWh)."}
+  - {name: price_eur_mwh, type: DOUBLE, description: "Day-ahead price DE-LU, hourly average (EUR/MWh)."}
+  - {name: solar_mwh, type: DOUBLE, description: "Solar (photovoltaics) generation (MWh)."}
+  - {name: wind_onshore_mwh, type: DOUBLE, description: "Onshore wind generation (MWh)."}
+  - {name: wind_offshore_mwh, type: DOUBLE, description: "Offshore wind generation (MWh)."}
+  - {name: lignite_mwh, type: DOUBLE, description: "Lignite generation (MWh)."}
+  - {name: hard_coal_mwh, type: DOUBLE, description: "Hard coal generation (MWh)."}
+  - {name: natural_gas_mwh, type: DOUBLE, description: "Natural gas generation (MWh)."}
+  - {name: renewables_mwh, type: DOUBLE, description: "Solar + onshore wind + offshore wind (MWh)."}
+  - {name: renewables_share, type: DOUBLE, description: "renewables_mwh / total_load_mwh; NULL if load is 0 or NULL."}
+  - {name: temperature_load_avg_c, type: DOUBLE, description: "Mean 2 m air temperature over the load-centre locations (deg C)."}
+  - {name: wind_speed_100m_onshore_avg_ms, type: DOUBLE, description: "Mean 100 m wind speed over the onshore-wind locations (m/s)."}
+  - {name: wind_speed_100m_offshore_ms, type: DOUBLE, description: "100 m wind speed at the offshore-wind location(s), averaged if several (m/s)."}
+  - {name: shortwave_radiation_solar_avg_wm2, type: DOUBLE, description: "Mean shortwave (global horizontal) radiation over the solar locations (W/m2)."}
+quality:
+  - {name: unique_hour, type: unique, columns: [hour_utc]}
+  - {name: wind_onshore_plausible, type: row_condition, sql: "wind_speed_100m_onshore_avg_ms IS NULL OR wind_speed_100m_onshore_avg_ms BETWEEN 0 AND 75", max_violation_pct: 0}
+  - {name: wind_offshore_plausible, type: row_condition, sql: "wind_speed_100m_offshore_ms IS NULL OR wind_speed_100m_offshore_ms BETWEEN 0 AND 75", max_violation_pct: 0}
+  - {name: temperature_plausible, type: row_condition, sql: "temperature_load_avg_c IS NULL OR temperature_load_avg_c BETWEEN -40 AND 50", max_violation_pct: 0}
+  - {name: radiation_plausible, type: row_condition, sql: "shortwave_radiation_solar_avg_wm2 IS NULL OR shortwave_radiation_solar_avg_wm2 BETWEEN 0 AND 1400", max_violation_pct: 0}

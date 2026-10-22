@@ -11,7 +11,9 @@ if _src and _src not in sys.path:
     sys.path.append(_src)
 
 from energy_lakehouse.transforms import (
-    GOLD_HOURLY_COLUMNS,
+    GOLD_ENERGY_DAILY_COLUMNS,
+    GOLD_ENERGY_HOURLY_COLUMNS,
+    GOLD_TABLE_COMMENTS,
     LOCAL_TZ,
     RENEWABLE_COLUMNS,
     ddl_schema,
@@ -21,22 +23,14 @@ from energy_lakehouse.transforms import (
 
 ENERGY_COLS = energy_columns()
 
-HOURLY_COLUMNS = GOLD_HOURLY_COLUMNS
-
-DAILY_COLUMNS = [
-    ("date_local", "DATE", f"Calendar day in {LOCAL_TZ}."),
-    *[(c, "DOUBLE", f"Daily sum of {c} (MWh).") for c in [*ENERGY_COLS, "renewables_mwh"]],
-    ("price_avg_eur_mwh", "DOUBLE", "Average hourly day-ahead price (EUR/MWh)."),
-    ("price_min_eur_mwh", "DOUBLE", "Lowest hourly day-ahead price (EUR/MWh)."),
-    ("price_max_eur_mwh", "DOUBLE", "Highest hourly day-ahead price (EUR/MWh)."),
-    ("renewables_share_avg", "DOUBLE", "Average of the hourly renewables_share."),
-    ("hour_count", "BIGINT", "Hours in the day: 24, or 23/25 on DST change days."),
-]
+# Column lists live in transforms.py: the single source for these schemas and contracts/*.yaml.
+HOURLY_COLUMNS = GOLD_ENERGY_HOURLY_COLUMNS
+DAILY_COLUMNS = GOLD_ENERGY_DAILY_COLUMNS
 
 
 @dp.materialized_view(
     name="gold_energy_hourly",
-    comment="Hourly German load, generation by source and day-ahead price (one row per UTC hour).",
+    comment=GOLD_TABLE_COMMENTS["gold_energy_hourly"],
     schema=ddl_schema(HOURLY_COLUMNS),
     # hour_local is TIMESTAMP_NTZ; Delta requires the timestampNtz table feature to be enabled
     # explicitly (else DELTA_FEATURES_REQUIRE_MANUAL_ENABLEMENT).
@@ -66,7 +60,7 @@ def gold_energy_hourly():
 
 @dp.materialized_view(
     name="gold_energy_daily",
-    comment=f"Daily German energy totals and price statistics by local calendar day ({LOCAL_TZ}).",
+    comment=GOLD_TABLE_COMMENTS["gold_energy_daily"],
     schema=ddl_schema(DAILY_COLUMNS),
 )
 def gold_energy_daily():
