@@ -26,6 +26,9 @@ src/energy_lakehouse/       # pure, unit-tested Python package
   transforms.py             #   pipeline helpers: path regexes, agg rules, gold columns,
                             #   weather raw schema + role aggregation mapping
   quality.py                #   daily-refresh quality checks (thresholds, CheckResult, raise)
+  contracts.py              #   data contracts: pydantic models, YAML loader, SQL renderers,
+                            #   schema/quality/freshness checks, product-page markdown
+contracts/                  # data contracts, one <gold_table>.yaml each (ODCS-inspired)
 src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
   bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
   silver.py                 #   silver_energy_long (MV, exploded + deduped + expectations)
@@ -35,18 +38,27 @@ src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energ
   gold_weather.py           #   gold_energy_weather_hourly (MV, energy LEFT JOIN weather by role)
 src/notebooks/              # Databricks notebooks (source format .py)
   03_quality_checks.py      #   quality_checks task of daily_refresh_job (uses quality.py)
+  04_apply_contracts.py     #   apply_contracts task: comments/tags on drift + grants
+  05_verify_contracts.py    #   verify_contracts task: schema, quality rules, freshness SLA
 scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per source, $LASTEXITCODE checks)
+scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>.md (--check)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
 docs/adr/                   # architecture decision records (NNNN-title.md)
 docs/tutorial/              # step-by-step labs (labN-*.md)
 docs/img/                   # screenshots: labN-stepNN-name.png
+docs/data-products/         # generated data product pages (one per contract; do not hand-edit)
 .github/workflows/ci.yml    # PR + push master (+ workflow_call): lint, test, bundle validate staging/prod
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
 .github/workflows/deploy-prod.yml    # release v*: env production (approval) -> deploy prod -> summary
 .github/workflows/daily-refresh.yml  # 05:17 UTC: sync_landing.sh, then jobs run-now prod daily_refresh_job
 ```
+
+## Local setup
+- On Windows with Smart App Control, put `python-preference = "only-system"` in
+  `%APPDATA%\uv\uv.toml` (user config, not the repo), because the setting would break CI (Linux
+  runners need uv-managed Python).
 
 ## Commands (PowerShell)
 ```powershell
@@ -58,6 +70,8 @@ uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8 --p
 uv run python -m energy_lakehouse.extract_local --source weather --past-days 63               # weather only
 .\scripts\sync_landing.ps1                 # upload data/landing/{smard,weather} to the shared volume + verify
 .\scripts\sync_landing.ps1 -Sources weather -Overwrite
+uv run python scripts/render_contract_docs.py          # regenerate docs/data-products/*.md
+uv run python scripts/render_contract_docs.py --check  # exit 1 if a page is out of date
 
 databricks bundle validate -t dev -p free
 databricks bundle deploy   -t dev -p free
@@ -147,7 +161,7 @@ builds its own tables in its own schema.
   fail, `has_measurements` drop, `plausible_temperature` / `plausible_wind` warn) →
   `gold_energy_weather_hourly` (`gold_energy_hourly` LEFT JOIN weather per `hour_utc`; columns
   from `transforms.WEATHER_ROLE_AGGS`: role → variable → avg). Gold column lists with comments
-  live in `transforms.py` (`GOLD_HOURLY_COLUMNS`, `gold_weather_columns()`); TIMESTAMP_NTZ
+  live in `transforms.py` (`GOLD_ENERGY_*_COLUMNS`, `gold_weather_columns()`); TIMESTAMP_NTZ
   columns need `table_properties={"delta.feature.timestampNtz": "supported"}`.
 - **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
   federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with
@@ -163,6 +177,30 @@ builds its own tables in its own schema.
   The workflow triggers the prod job (`vars.DATABRICKS_JOB_ID` = prod job id). CI/CD deploys
   use secrets `DATABRICKS_CICD_CLIENT_ID` / `DATABRICKS_CICD_CLIENT_SECRET` (+ `DATABRICKS_HOST`).
   OIDC is used in the AWS chapter.
+- **Data contracts (`contracts/<table>.yaml`, one per gold table):** ODCS-inspired YAML parsed
+  by `energy_lakehouse.contracts` (pydantic v2, `extra="forbid"`): id, semver `version`,
+  status, owner, description, table, `object_type: materialized_view`, grain, primary_key, tags,
+  sla (`freshness_hours`, `freshness_column`, schedule), consumers (group + SELECT), columns
+  (name, type, nullable, description), quality rules (`unique` / `not_null` / `row_condition`
+  with `sql`, optional `where`, `max_violation_pct`; `{table}` in sql/where = the quoted table).
+  Columns with `nullable: false` get an implicit `required_columns_not_null` rule.
+  - Single source: gold column lists (name, type, comment) and table comments live in
+    `transforms.py` (`GOLD_ENERGY_HOURLY_COLUMNS`, `GOLD_ENERGY_DAILY_COLUMNS`,
+    `GOLD_ENERGY_WEATHER_HOURLY_COLUMNS`, `GOLD_TABLE_COLUMNS`, `GOLD_TABLE_COMMENTS`) and are
+    used by the pipeline. `tests/test_contracts.py` fails unless each contract's column names,
+    types and descriptions and its table description match them (breaking-change guard), and
+    unless `docs/data-products/*.md` match the rendered contracts.
+  - `daily_refresh_job`: `quality_checks` → `apply_contracts` (`04_apply_contracts.py`: table/
+    column comments and tags only where they differ, plus `GRANT USE SCHEMA` / `GRANT SELECT` per
+    consumer group; removed tags/consumers are not revoked) → `verify_contracts`
+    (`05_verify_contracts.py`: `information_schema.columns` names + `full_data_type`, quality
+    rules, freshness; one result table, raises listing all failures). Consumer groups (e.g.
+    `energy-consumers`) must exist in the workspace, else the GRANT fails the job.
+  - **How to change a contract:** change `transforms.py` (if the table changes) and the YAML
+    together in one PR, bump `version`, run `uv run python scripts/render_contract_docs.py`,
+    `uv run pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column
+    = MINOR; descriptions, rules, tags, SLA wording = PATCH. Never edit `docs/data-products/` by
+    hand.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

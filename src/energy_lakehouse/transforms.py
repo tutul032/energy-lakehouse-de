@@ -40,7 +40,7 @@ PIVOT_COLUMNS: dict[str, str] = {
 RENEWABLE_COLUMNS: tuple[str, ...] = ("solar_mwh", "wind_onshore_mwh", "wind_offshore_mwh")
 
 # gold_energy_hourly columns: (name, type, comment). Reused by gold_energy_weather_hourly.
-GOLD_HOURLY_COLUMNS: list[tuple[str, str, str]] = [
+GOLD_ENERGY_HOURLY_COLUMNS: list[tuple[str, str, str]] = [
     ("hour_utc", "TIMESTAMP", "Start of the hour (UTC)."),
     ("hour_local", "TIMESTAMP_NTZ", f"Start of the hour, local wall-clock time ({LOCAL_TZ})."),
     ("total_load_mwh", "DOUBLE", "Total grid load in Germany (MWh)."),
@@ -205,4 +205,42 @@ def gold_weather_columns(
     aggs: Iterable[WeatherRoleAgg] = WEATHER_ROLE_AGGS,
 ) -> list[tuple[str, str, str]]:
     """``(name, type, comment)`` for gold_energy_weather_hourly: energy columns + weather."""
-    return [*GOLD_HOURLY_COLUMNS, *[(a.column, "DOUBLE", a.comment) for a in aggs]]
+    return [*GOLD_ENERGY_HOURLY_COLUMNS, *[(a.column, "DOUBLE", a.comment) for a in aggs]]
+
+
+# gold_energy_daily columns: (name, type, comment), per local calendar day.
+GOLD_ENERGY_DAILY_COLUMNS: list[tuple[str, str, str]] = [
+    ("date_local", "DATE", f"Calendar day in {LOCAL_TZ}."),
+    *[(c, "DOUBLE", f"Daily sum of {c} (MWh).") for c in [*energy_columns(), "renewables_mwh"]],
+    ("price_avg_eur_mwh", "DOUBLE", "Average hourly day-ahead price (EUR/MWh)."),
+    ("price_min_eur_mwh", "DOUBLE", "Lowest hourly day-ahead price (EUR/MWh)."),
+    ("price_max_eur_mwh", "DOUBLE", "Highest hourly day-ahead price (EUR/MWh)."),
+    ("renewables_share_avg", "DOUBLE", "Average of the hourly renewables_share."),
+    ("hour_count", "BIGINT", "Hours in the day: 24, or 23/25 on DST change days."),
+]
+
+GOLD_ENERGY_WEATHER_HOURLY_COLUMNS: list[tuple[str, str, str]] = gold_weather_columns()
+
+# Single source for the gold schemas: used by the pipeline and checked against contracts/*.yaml.
+GOLD_TABLE_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
+    "gold_energy_hourly": GOLD_ENERGY_HOURLY_COLUMNS,
+    "gold_energy_daily": GOLD_ENERGY_DAILY_COLUMNS,
+    "gold_energy_weather_hourly": GOLD_ENERGY_WEATHER_HOURLY_COLUMNS,
+}
+
+GOLD_TABLE_COMMENTS: dict[str, str] = {
+    "gold_energy_hourly": (
+        "Hourly German power load, day-ahead price and generation mix (SMARD, CC BY 4.0). "
+        "One row per UTC hour."
+    ),
+    "gold_energy_daily": (
+        f"Daily German energy totals and price statistics per {LOCAL_TZ} calendar day "
+        "(SMARD, CC BY 4.0). One row per local day."
+    ),
+    "gold_energy_weather_hourly": (
+        "gold_energy_hourly left-joined with Open-Meteo weather aggregated by location role: "
+        "load-centre temperature, onshore/offshore 100 m wind, solar radiation "
+        "(SMARD + Open-Meteo, CC BY 4.0). Weather columns are NULL where no observation "
+        "exists yet."
+    ),
+}
