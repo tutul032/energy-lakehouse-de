@@ -1,5 +1,6 @@
 # Daily refresh: energy_pipeline update, quality checks on silver/gold, then the gold data
-# contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness.
+# contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness;
+# finally the day-ahead forecast (score_forecast) and its accuracy (forecast_accuracy).
 # No schedule: GitHub Actions (.github/workflows/daily-refresh.yml) uploads fresh landing files
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
 # principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
@@ -43,6 +44,24 @@ resources:
             - task_key: apply_contracts
           notebook_task:
             notebook_path: ../src/notebooks/05_verify_contracts.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+        # Day-ahead forecast for the local day D+1 with the champion models (train_forecast_job),
+        # then accuracy of all past forecasts against the actuals.
+        - task_key: score_forecast
+          depends_on:
+            - task_key: verify_contracts
+          notebook_task:
+            notebook_path: ../src/notebooks/11_score_forecast.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+        - task_key: forecast_accuracy
+          depends_on:
+            - task_key: score_forecast
+          notebook_task:
+            notebook_path: ../src/notebooks/12_forecast_accuracy.py
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"

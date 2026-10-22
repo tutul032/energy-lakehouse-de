@@ -12,9 +12,17 @@
     The landing volume must already exist (created once, e.g. CREATE VOLUME
     workspace.energy_raw.landing); this script does not create it.
 
+    The script only uploads; extract first. Weather comes in two kinds of files, both under
+    data/landing/weather/location=<id>/ and both uploaded by -Sources weather:
+      run_ts=<yyyymmddThhmmZ>.json           daily forecast run (past 7 days + today + 2 days)
+      run_date=archive_<start>_<end>.json    one-off history backfill (archive API)
+    Backfill: uv run python -m energy_lakehouse.extract_local --source weather --mode archive
+              --start 2026-08-01 --end 2026-10-15   (one line), then .\scripts\sync_landing.ps1
+              -Sources weather.
+
 .EXAMPLE
     .\scripts\sync_landing.ps1
-    .\scripts\sync_landing.ps1 -Sources weather
+    .\scripts\sync_landing.ps1 -Sources weather   # e.g. after an archive backfill
     .\scripts\sync_landing.ps1 -Overwrite   # also replace files that already exist in the volume
 #>
 [CmdletBinding()]

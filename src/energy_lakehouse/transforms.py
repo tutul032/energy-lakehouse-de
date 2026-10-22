@@ -6,9 +6,15 @@ The pipeline code in ``src/pipelines/`` turns these into Spark expressions.
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 
 from energy_lakehouse.smard_config import SERIES, SmardSeries
-from energy_lakehouse.weather_config import HOURLY_VARIABLES, LOCATIONS, WeatherLocation
+from energy_lakehouse.weather_config import (
+    HOURLY_VARIABLES,
+    LOCATIONS,
+    RUN_TS_FORMAT,
+    WeatherLocation,
+)
 
 # Landing path: .../smard/filter=<id>/resolution=<res>/<ts>.json
 # Patterns are valid both as Python and Java regexes (Spark ``regexp_extract``).
@@ -16,9 +22,17 @@ FILTER_ID_REGEX = r"filter=(\d+)"
 RESOLUTION_REGEX = r"resolution=([^/\\]+)"
 CHUNK_TS_REGEX = r"(\d+)\.json$"
 
-# Weather landing path: .../weather/location=<id>/run_date=<yyyy-mm-dd>.json
+# Weather landing path, .../weather/location=<id>/ followed by one of:
+#   run_ts=<yyyymmddThhmmZ>.json          daily forecast run (UTC run timestamp)
+#   run_date=<yyyy-mm-dd>.json            daily forecast run, old naming (run_ts_utc = 00:00 UTC)
+#   run_date=archive_<start>_<end>.json   archive backfill (run_ts_utc = end + 1 day, 00:00 UTC;
+#                                         bronze run_date is NULL for these)
 LOCATION_REGEX = r"location=([^/\\]+)"
+RUN_TS_REGEX = r"run_ts=(\d{8}T\d{4}Z)\.json$"
 RUN_DATE_REGEX = r"run_date=(\d{4}-\d{2}-\d{2})\.json$"
+ARCHIVE_RUN_REGEX = r"run_date=archive_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$"
+# Spark (Java DateTimeFormatter) pattern equivalent to weather_config.RUN_TS_FORMAT.
+RUN_TS_SPARK_FORMAT = "yyyyMMdd'T'HHmm'Z'"
 
 LOCAL_TZ = "Europe/Berlin"
 
@@ -116,9 +130,21 @@ def parse_landing_path(path: str) -> tuple[int, str, int]:
     )
 
 
-def parse_weather_landing_path(path: str) -> tuple[str, str]:
-    """Return ``(location_id, run_date)`` parsed from a weather landing file path."""
-    return _extract(LOCATION_REGEX, path), _extract(RUN_DATE_REGEX, path)
+def parse_weather_landing_path(path: str) -> tuple[str, datetime, bool]:
+    """Return ``(location_id, run_ts_utc, is_archive)`` from a weather landing file path.
+
+    Mirrors bronze_weather: ``run_ts=`` files give their UTC run timestamp, old ``run_date=``
+    files 00:00 UTC of that day, archive files 00:00 UTC of the day after their end date.
+    """
+    location_id = _extract(LOCATION_REGEX, path)
+    if match := re.search(RUN_TS_REGEX, path):
+        run_ts = datetime.strptime(match.group(1), RUN_TS_FORMAT).replace(tzinfo=UTC)
+        return location_id, run_ts, False
+    if match := re.search(ARCHIVE_RUN_REGEX, path):
+        end = date.fromisoformat(match.group(2)) + timedelta(days=1)
+        return location_id, datetime(end.year, end.month, end.day, tzinfo=UTC), True
+    run_date = date.fromisoformat(_extract(RUN_DATE_REGEX, path))
+    return location_id, datetime(run_date.year, run_date.month, run_date.day, tzinfo=UTC), False
 
 
 def agg_rule(unit: str) -> str:
@@ -208,6 +234,44 @@ def gold_weather_columns(
     return [*GOLD_ENERGY_HOURLY_COLUMNS, *[(a.column, "DOUBLE", a.comment) for a in aggs]]
 
 
+def gold_weather_forecast_columns(
+    aggs: Iterable[WeatherRoleAgg] = WEATHER_ROLE_AGGS,
+) -> list[tuple[str, str, str]]:
+    """``(name, type, comment)`` for gold_weather_forecast_hourly: hour keys, weather, issue time.
+
+    Same role aggregation (column names/comments) as gold_energy_weather_hourly, for future hours.
+    """
+    return [
+        *GOLD_ENERGY_HOURLY_COLUMNS[:2],  # hour_utc, hour_local
+        *[(a.column, "DOUBLE", a.comment) for a in aggs],
+        (
+            "issued_at",
+            "TIMESTAMP",
+            "Newest run timestamp (UTC) of the forecast files behind this hour (issue time).",
+        ),
+    ]
+
+
+# silver_weather_forecast_hourly columns: (name, type, comment), one row per location and hour.
+SILVER_WEATHER_FORECAST_HOURLY_COLUMNS: list[tuple[str, str, str]] = [
+    ("location_id", "STRING", "Weather location id (weather_config.LOCATIONS)."),
+    ("location_name", "STRING", "Human-readable location name."),
+    ("role", "STRING", "SMARD series the location is a proxy for (load, solar, ...)."),
+    ("ts_s", "BIGINT", "Forecast hour as unix seconds (UTC), as delivered by Open-Meteo."),
+    ("timestamp_utc", "TIMESTAMP", "Start of the forecast hour (UTC)."),
+    ("temperature_2m", "DOUBLE", "Forecast 2 m air temperature (deg C)."),
+    ("wind_speed_10m", "DOUBLE", "Forecast 10 m wind speed (m/s)."),
+    ("wind_speed_100m", "DOUBLE", "Forecast 100 m wind speed (m/s)."),
+    ("shortwave_radiation", "DOUBLE", "Forecast shortwave (global horizontal) radiation (W/m2)."),
+    ("cloud_cover", "DOUBLE", "Forecast total cloud cover (%)."),
+    ("run_date", "DATE", "UTC run date of the landing file (newest per location)."),
+    ("run_ts_utc", "TIMESTAMP", "UTC run timestamp of the landing file = forecast issue time."),
+    ("source_file", "STRING", "Landing file the forecast comes from."),
+    ("file_modification_time", "TIMESTAMP", "Modification time of the landing file."),
+    ("ingested_at", "TIMESTAMP", "Bronze ingestion time of the landing file."),
+]
+
+
 # gold_energy_daily columns: (name, type, comment), per local calendar day.
 GOLD_ENERGY_DAILY_COLUMNS: list[tuple[str, str, str]] = [
     ("date_local", "DATE", f"Calendar day in {LOCAL_TZ}."),
@@ -220,12 +284,68 @@ GOLD_ENERGY_DAILY_COLUMNS: list[tuple[str, str, str]] = [
 ]
 
 GOLD_ENERGY_WEATHER_HOURLY_COLUMNS: list[tuple[str, str, str]] = gold_weather_columns()
+GOLD_WEATHER_FORECAST_HOURLY_COLUMNS: list[tuple[str, str, str]] = gold_weather_forecast_columns()
+
+# Day-ahead forecasts (written by 11_score_forecast, not the pipeline): one row per target hour,
+# target and issue day.
+GOLD_FORECAST_HOURLY_COLUMNS: list[tuple[str, str, str]] = [
+    ("target_hour_utc", "TIMESTAMP", "Start of the forecast hour (UTC)."),
+    (
+        "target_hour_local",
+        "TIMESTAMP_NTZ",
+        f"Start of the forecast hour, local wall-clock time ({LOCAL_TZ}).",
+    ),
+    (
+        "target",
+        "STRING",
+        "Forecast target: gold_energy_hourly column (total_load_mwh or price_eur_mwh).",
+    ),
+    ("forecast", "DOUBLE", "Forecast value in the target's unit (MWh or EUR/MWh)."),
+    (
+        "model_version",
+        "STRING",
+        "Unity Catalog version of forecaster_<target> (alias champion) that made the forecast.",
+    ),
+    (
+        "issue_time_utc",
+        "TIMESTAMP",
+        "When the forecast was issued (UTC); only data available then was used.",
+    ),
+    ("issue_date", "DATE", f"Local ({LOCAL_TZ}) issue day D; the forecast covers local day D+1."),
+]
+
+# Forecast accuracy (written by 12_forecast_accuracy): one row per target and issue day.
+GOLD_FORECAST_ACCURACY_COLUMNS: list[tuple[str, str, str]] = [
+    ("target", "STRING", "Forecast target (total_load_mwh or price_eur_mwh)."),
+    ("issue_date", "DATE", f"Local ({LOCAL_TZ}) issue day D of the forecast for day D+1."),
+    ("n_hours", "BIGINT", "Forecast hours with an actual value in gold_energy_hourly."),
+    ("mae", "DOUBLE", "Mean absolute error of the model forecast (target unit)."),
+    (
+        "mape",
+        "DOUBLE",
+        "Mean absolute percentage error of the model forecast (%), hours with |actual| < 1 "
+        "skipped; NULL for price_eur_mwh.",
+    ),
+    (
+        "baseline_mae",
+        "DOUBLE",
+        "Mean absolute error of the seasonal naive baseline (same hour 168 h earlier).",
+    ),
+    (
+        "baseline_mape",
+        "DOUBLE",
+        "MAPE of the seasonal naive baseline (%); NULL for price_eur_mwh.",
+    ),
+]
 
 # Single source for the gold schemas: used by the pipeline and checked against contracts/*.yaml.
 GOLD_TABLE_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "gold_energy_hourly": GOLD_ENERGY_HOURLY_COLUMNS,
     "gold_energy_daily": GOLD_ENERGY_DAILY_COLUMNS,
     "gold_energy_weather_hourly": GOLD_ENERGY_WEATHER_HOURLY_COLUMNS,
+    "gold_weather_forecast_hourly": GOLD_WEATHER_FORECAST_HOURLY_COLUMNS,
+    "gold_forecast_hourly": GOLD_FORECAST_HOURLY_COLUMNS,
+    "gold_forecast_accuracy": GOLD_FORECAST_ACCURACY_COLUMNS,
 }
 
 GOLD_TABLE_COMMENTS: dict[str, str] = {
@@ -243,4 +363,37 @@ GOLD_TABLE_COMMENTS: dict[str, str] = {
         "(SMARD + Open-Meteo, CC BY 4.0). Weather columns are NULL where no observation "
         "exists yet."
     ),
+    "gold_weather_forecast_hourly": (
+        "Open-Meteo day-ahead weather forecast aggregated by location role, one row per future "
+        "UTC hour: load-centre temperature, onshore/offshore 100 m wind, solar radiation "
+        "(Open-Meteo, CC BY 4.0). Built from the newest daily run per location; only hours "
+        "after its issue time."
+    ),
+    "gold_forecast_hourly": (
+        "Day-ahead forecasts of total_load_mwh and price_eur_mwh: issued daily around 05:17 UTC "
+        f"on local day D for every hour of the {LOCAL_TZ} day D+1, using only data available "
+        "at issue time (champion model per target). One row per target_hour_utc, target and "
+        "issue_date."
+    ),
+    "gold_forecast_accuracy": (
+        "Accuracy of the day-ahead forecasts against gold_energy_hourly actuals, per target and "
+        "issue_date: MAE/MAPE of the model and of the seasonal naive baseline (same hour one "
+        "week earlier) for the same hours. Rebuilt after every scoring run."
+    ),
+}
+
+SILVER_WEATHER_FORECAST_HOURLY_COMMENT = (
+    "Open-Meteo hourly weather forecast per location (one row per location_id and "
+    "timestamp_utc), from the newest daily run per location; only hours after that file's "
+    "run timestamp (the forecast available at issue time)."
+)
+
+# Every table with a data contract (contracts/<table>.yaml): the gold tables + the forecast silver.
+CONTRACT_TABLE_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
+    **GOLD_TABLE_COLUMNS,
+    "silver_weather_forecast_hourly": SILVER_WEATHER_FORECAST_HOURLY_COLUMNS,
+}
+CONTRACT_TABLE_COMMENTS: dict[str, str] = {
+    **GOLD_TABLE_COMMENTS,
+    "silver_weather_forecast_hourly": SILVER_WEATHER_FORECAST_HOURLY_COMMENT,
 }

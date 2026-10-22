@@ -1,0 +1,44 @@
+# Weekly training of the day-ahead forecasters (one task per target, run in parallel): each task
+# trains on gold_energy_weather_hourly, logs to MLflow and registers
+# ${var.catalog}.${var.schema}.forecaster_<target> in Unity Catalog; alias `champion` moves only
+# if the new version beats the seasonal naive baseline (see src/notebooks/10_train_forecast.py).
+# Schedule: Mondays 06:37 UTC (after the 05:17 daily refresh); development mode pauses it in dev.
+# No cluster definition: tasks run on serverless compute. Libraries (scikit-learn, mlflow,
+# holidays, pandas) are installed by the notebook from src/notebooks/forecast_requirements.txt:
+# job-level `environments` only apply to non-notebook (python script/wheel) tasks.
+resources:
+  jobs:
+    train_forecast_job:
+      name: train_forecast_job
+      max_concurrent_runs: 1
+      timeout_seconds: 3600
+      schedule:
+        quartz_cron_expression: "0 37 6 ? * MON"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+      email_notifications:
+        on_failure:
+          - ${var.alert_email}
+      tasks:
+        - task_key: train_load
+          notebook_task:
+            notebook_path: ../src/notebooks/10_train_forecast.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              target: total_load_mwh
+        - task_key: train_price
+          notebook_task:
+            notebook_path: ../src/notebooks/10_train_forecast.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              target: price_eur_mwh
+      permissions:
+        - service_principal_name: ${var.refresh_sp_app_id}
+          level: CAN_MANAGE_RUN

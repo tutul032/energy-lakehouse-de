@@ -2,9 +2,11 @@
 # MAGIC %md
 # MAGIC # 02_extract_weather
 # MAGIC Download hourly Open-Meteo weather per location (raw JSON, unchanged) into the shared
-# MAGIC landing volume `<landing_root>/weather/location=<id>/run_date=<yyyy-mm-dd>.json` (default
-# MAGIC `/Volumes/workspace/energy_raw/landing`, used by all targets). One file per location and UTC
-# MAGIC run date; existing files are skipped (idempotent). The volume must already exist.
+# MAGIC landing volume `<landing_root>/weather/location=<id>/run_ts=<yyyymmddThhmmZ>.json`
+# MAGIC (default `/Volumes/workspace/energy_raw/landing`, used by all targets). One file per
+# MAGIC location and UTC run timestamp (past `past_days` + today + 2 days); files are never
+# MAGIC overwritten. The volume must already exist. History backfill: `extract_local --mode archive`
+# MAGIC (see CLAUDE.md).
 
 # COMMAND ----------
 

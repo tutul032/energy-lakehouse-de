@@ -1,0 +1,41 @@
+# Data contract for silver_weather_forecast_hourly (ODCS-inspired). Column names/types/descriptions
+# must match SILVER_WEATHER_FORECAST_HOURLY_COLUMNS in src/energy_lakehouse/transforms.py.
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+apiVersion: v1
+kind: DataContract
+id: energy.silver_weather_forecast_hourly
+version: 1.1.0
+status: active
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Open-Meteo hourly weather forecast per location (one row per location_id and timestamp_utc), from the newest daily run per location; only hours after that file's run timestamp (the forecast available at issue time)."
+table: silver_weather_forecast_hourly  # catalog/schema come from the target
+object_type: materialized_view
+grain: one row per location_id and timestamp_utc
+primary_key: [location_id, timestamp_utc]
+tags: {layer: silver, domain: energy, data_product: weather_forecast_hourly, license: CC-BY-4.0, source: open-meteo}
+sla: {freshness_hours: 30, freshness_column: ingested_at, schedule: "daily ~05:17 UTC"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: location_id, type: STRING, nullable: false, description: "Weather location id (weather_config.LOCATIONS)."}
+  - {name: location_name, type: STRING, description: "Human-readable location name."}
+  - {name: role, type: STRING, description: "SMARD series the location is a proxy for (load, solar, ...)."}
+  - {name: ts_s, type: BIGINT, nullable: false, description: "Forecast hour as unix seconds (UTC), as delivered by Open-Meteo."}
+  - {name: timestamp_utc, type: TIMESTAMP, nullable: false, description: "Start of the forecast hour (UTC)."}
+  - {name: temperature_2m, type: DOUBLE, nullable: false, description: "Forecast 2 m air temperature (deg C)."}
+  - {name: wind_speed_10m, type: DOUBLE, description: "Forecast 10 m wind speed (m/s)."}
+  - {name: wind_speed_100m, type: DOUBLE, description: "Forecast 100 m wind speed (m/s)."}
+  - {name: shortwave_radiation, type: DOUBLE, description: "Forecast shortwave (global horizontal) radiation (W/m2)."}
+  - {name: cloud_cover, type: DOUBLE, description: "Forecast total cloud cover (%)."}
+  - {name: run_date, type: DATE, nullable: false, description: "UTC run date of the landing file (newest per location)."}
+  - {name: run_ts_utc, type: TIMESTAMP, nullable: false, description: "UTC run timestamp of the landing file = forecast issue time."}
+  - {name: source_file, type: STRING, nullable: false, description: "Landing file the forecast comes from."}
+  - {name: file_modification_time, type: TIMESTAMP, description: "Modification time of the landing file."}
+  - {name: ingested_at, type: TIMESTAMP, nullable: false, description: "Bronze ingestion time of the landing file."}
+quality:
+  - {name: unique_location_hour, type: unique, columns: [location_id, timestamp_utc]}
+  - {name: future_hours_only, type: row_condition, sql: "timestamp_utc > run_ts_utc", max_violation_pct: 0}
+  - {name: known_location, type: not_null, columns: [role]}
+  - {name: temperature_plausible, type: row_condition, sql: "temperature_2m BETWEEN -40 AND 50", max_violation_pct: 0}
+  - {name: wind_plausible, type: row_condition, sql: "wind_speed_100m IS NULL OR wind_speed_100m BETWEEN 0 AND 75", max_violation_pct: 0}
+  - {name: radiation_plausible, type: row_condition, sql: "shortwave_radiation IS NULL OR shortwave_radiation BETWEEN 0 AND 1400", max_violation_pct: 0}

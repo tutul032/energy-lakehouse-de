@@ -1,0 +1,7 @@
+# Libraries for 10_train_forecast / 11_score_forecast (installed with %pip in the notebook:
+# serverless job environments only apply to non-notebook tasks). Training and scoring install
+# the same versions so the pickled scikit-learn model loads unchanged.
+scikit-learn==1.9.1
+mlflow==3.17.2
+holidays==0.107
+pandas>=2.2
