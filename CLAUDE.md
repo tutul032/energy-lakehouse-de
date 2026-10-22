@@ -56,9 +56,9 @@ docs/data-products/         # generated data product pages (one per contract; do
 ```
 
 ## Local setup
-- Python 3.12 from python.org (signed installer), not a uv-managed build: `pyproject.toml` sets
-  `[tool.uv] python-preference = "only-system"`. On Windows with Smart App Control, uv-managed
-  Python builds can be blocked (os error 4551). CI (Linux) is unaffected.
+- On Windows with Smart App Control, put `python-preference = "only-system"` in
+  `%APPDATA%\uv\uv.toml` (user config, not the repo), because the setting would break CI (Linux
+  runners need uv-managed Python).
 
 ## Commands (PowerShell)
 ```powershell
