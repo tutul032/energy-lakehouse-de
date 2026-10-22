@@ -20,10 +20,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/energy_lakehouse"]
 
-[tool.uv]
-# On Windows with Smart App Control, uv-managed Python builds can be blocked (os error 4551);
-# the signed python.org build is used locally. CI (Linux) is unaffected.
-python-preference = "only-system"
+
+
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
