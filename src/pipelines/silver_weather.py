@@ -32,7 +32,14 @@ def silver_weather_hourly():
     locations = spark.createDataFrame(
         weather_location_rows(), "location_id STRING, location_name STRING, role STRING"
     )
-    file_cols = ["location_id", "run_date", "source_file", "file_modification_time", "ingested_at"]
+    file_cols = [
+        "location_id",
+        "run_date",
+        "run_ts_utc",
+        "source_file",
+        "file_modification_time",
+        "ingested_at",
+    ]
     array_cols = ["time", *HOURLY_VARIABLES]
     points = (
         spark.read.table("bronze_weather_raw")
@@ -49,8 +56,8 @@ def silver_weather_hourly():
         .where("timestamp_utc IS NULL OR timestamp_utc <= current_timestamp()")
     )
     newest_first = Window.partitionBy("location_id", "timestamp_utc").orderBy(
+        F.col("run_ts_utc").desc(),
         F.col("file_modification_time").desc(),
-        F.col("run_date").desc(),
         F.col("source_file").desc(),
     )
     return (

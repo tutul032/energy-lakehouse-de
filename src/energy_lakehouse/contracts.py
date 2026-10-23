@@ -46,6 +46,10 @@ _TYPE_ALIASES = {
 
 _OBJECT_KEYWORDS = {"table": "TABLE", "materialized_view": "MATERIALIZED VIEW"}
 
+# Contracts apply_contracts/verify_contracts act on. `draft` tables may not exist or be filled yet
+# (e.g. forecast tables before the first champion model); `retired` tables are gone.
+ENFORCED_STATUSES = ("active", "deprecated")
+
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -178,6 +182,11 @@ def load_contracts(directory: Path | str = CONTRACTS_DIR) -> list[DataContract]:
     if not paths:
         raise FileNotFoundError(f"no contracts (*.yaml) in {directory}")
     return [load_contract(p) for p in paths]
+
+
+def is_enforced(contract: DataContract) -> bool:
+    """True if apply/verify should act on the contract (status ``active`` or ``deprecated``)."""
+    return contract.status in ENFORCED_STATUSES
 
 
 # --- SQL helpers -------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """Offline tests for energy_lakehouse.contracts and contracts/*.yaml (no Spark).
 
 The column test is the breaking-change guard: a pipeline change that adds, removes, renames or
-retypes a gold column fails here until the contract (and its version) is updated too.
+retypes a contracted column fails here until the contract (and its version) is updated too.
 """
 
 import re
@@ -22,6 +22,7 @@ HOURLY = BY_TABLE["gold_energy_hourly"]
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
 ids = [c.table for c in CONTRACTS]
+FORECAST_TABLES = ("gold_forecast_hourly", "gold_forecast_accuracy")
 
 
 def _minimal(**overrides) -> dict:
@@ -45,8 +46,9 @@ def _minimal(**overrides) -> dict:
 # --- contracts/*.yaml ------------------------------------------------------------------------
 
 
-def test_one_contract_per_gold_table():
-    assert sorted(BY_TABLE) == sorted(transforms.GOLD_TABLE_COLUMNS)
+def test_one_contract_per_contracted_table():
+    assert sorted(BY_TABLE) == sorted(transforms.CONTRACT_TABLE_COLUMNS)
+    assert set(transforms.GOLD_TABLE_COLUMNS) <= set(BY_TABLE)
 
 
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
@@ -62,7 +64,7 @@ def test_primary_key_subset_of_columns(contract):
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
 def test_columns_match_transforms(contract):
     """Breaking-change guard: contract columns == the pipeline's column constant."""
-    expected = transforms.GOLD_TABLE_COLUMNS[contract.table]
+    expected = transforms.CONTRACT_TABLE_COLUMNS[contract.table]
     assert sorted(contract.column_names) == sorted(name for name, _, _ in expected)
     assert {c.name: c.type for c in contract.columns} == {n: t for n, t, _ in expected}
 
@@ -70,17 +72,19 @@ def test_columns_match_transforms(contract):
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
 def test_descriptions_match_pipeline_comments(contract):
     """Pipeline and apply_contracts set the same comments, so neither keeps overwriting them."""
-    expected = transforms.GOLD_TABLE_COLUMNS[contract.table]
+    expected = transforms.CONTRACT_TABLE_COLUMNS[contract.table]
     assert {c.name: c.description for c in contract.columns} == {n: d for n, _, d in expected}
-    assert contract.description == transforms.GOLD_TABLE_COMMENTS[contract.table]
+    assert contract.description == transforms.CONTRACT_TABLE_COMMENTS[contract.table]
 
 
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
 def test_contract_metadata(contract):
     assert contract.id == f"energy.{contract.table}"
-    assert contract.object_type == "materialized_view"
+    # Pipeline tables are materialized views; the forecast tables are written by notebooks.
+    expected = "table" if contract.table in FORECAST_TABLES else "materialized_view"
+    assert contract.object_type == expected
     assert contract.consumers and contract.quality
-    assert contract.tags["layer"] == "gold"
+    assert contract.tags["layer"] == contract.table.split("_")[0]  # gold / silver
 
 
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
@@ -153,6 +157,21 @@ def test_load_contract_rejects_non_mapping(tmp_path):
 def test_load_contracts_fails_on_empty_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
         contracts.load_contracts(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("status", "enforced"),
+    [("active", True), ("deprecated", True), ("draft", False), ("retired", False)],
+)
+def test_is_enforced_by_status(status, enforced):
+    contract = DataContract.model_validate(_minimal(status=status))
+    assert contracts.is_enforced(contract) is enforced
+
+
+def test_pipeline_contracts_enforced_forecast_contracts_draft():
+    # Forecast tables appear only after the first scoring run; their contracts start as draft.
+    for contract in CONTRACTS:
+        assert contracts.is_enforced(contract) is (contract.table not in FORECAST_TABLES)
 
 
 # --- rendered SQL snapshots (gold_energy_hourly) ---------------------------------------------
@@ -249,6 +268,19 @@ def test_quality_sql_where_substitutes_table():
         "SELECT count(*) AS total_rows, count_if(NOT coalesce((hour_count BETWEEN 23 AND 25), "
         f"FALSE)) AS violations FROM {fqn} WHERE (date_local < "
         f"(SELECT date_sub(max(date_local), 1) FROM {fqn}))"
+    )
+
+
+def test_quality_sql_latest_issue_complete():
+    contract = BY_TABLE["gold_forecast_hourly"]
+    rule = next(r for r in contract.quality if r.name == "latest_issue_complete")
+    sql = contracts.quality_sql(contract, rule, "workspace", "energy_prod")
+    fqn = "`workspace`.`energy_prod`.`gold_forecast_hourly`"
+    latest = f"(SELECT max(issue_date) FROM {fqn})"
+    assert sql == (
+        "SELECT count(*) AS total_rows, count_if(NOT coalesce((target IN (SELECT target FROM "
+        f"{fqn} WHERE issue_date = {latest} GROUP BY target HAVING count(*) BETWEEN 23 AND 25)), "
+        f"FALSE)) AS violations FROM {fqn} WHERE (issue_date = {latest})"
     )
 
 

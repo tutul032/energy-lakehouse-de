@@ -1,0 +1,34 @@
+# Data contract for gold_forecast_accuracy (ODCS-inspired). Column names/types/descriptions must
+# match GOLD_FORECAST_ACCURACY_COLUMNS in src/energy_lakehouse/transforms.py (tests/test_contracts.py).
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags/status = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+# status draft: apply_contracts/verify_contracts skip it until forecasts flow (see
+# gold_forecast_hourly.yaml); then set status: active and bump the PATCH version.
+apiVersion: v1
+kind: DataContract
+id: energy.gold_forecast_accuracy
+version: 0.1.0
+status: draft
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Accuracy of the day-ahead forecasts against gold_energy_hourly actuals, per target and issue_date: MAE/MAPE of the model and of the seasonal naive baseline (same hour one week earlier) for the same hours. Rebuilt after every scoring run."
+table: gold_forecast_accuracy        # catalog/schema come from the target
+object_type: table                   # Delta table rebuilt by 12_forecast_accuracy (INSERT OVERWRITE)
+grain: one row per target and issue_date
+primary_key: [target, issue_date]
+tags: {layer: gold, domain: energy, data_product: energy_forecast_accuracy, license: CC-BY-4.0, source: smard+open-meteo}
+# Accuracy for issue day D needs the actuals of D+1, so the newest issue_date lags ~3 days.
+sla: {freshness_hours: 120, freshness_column: issue_date, schedule: "daily ~05:17 UTC (forecast_accuracy task)"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: target, type: STRING, nullable: false, description: "Forecast target (total_load_mwh or price_eur_mwh)."}
+  - {name: issue_date, type: DATE, nullable: false, description: "Local (Europe/Berlin) issue day D of the forecast for day D+1."}
+  - {name: n_hours, type: BIGINT, nullable: false, description: "Forecast hours with an actual value in gold_energy_hourly."}
+  - {name: mae, type: DOUBLE, nullable: false, description: "Mean absolute error of the model forecast (target unit)."}
+  - {name: mape, type: DOUBLE, description: "Mean absolute percentage error of the model forecast (%), hours with |actual| < 1 skipped; NULL for price_eur_mwh."}
+  - {name: baseline_mae, type: DOUBLE, description: "Mean absolute error of the seasonal naive baseline (same hour 168 h earlier)."}
+  - {name: baseline_mape, type: DOUBLE, description: "MAPE of the seasonal naive baseline (%); NULL for price_eur_mwh."}
+quality:
+  - {name: unique_target_day, type: unique, columns: [target, issue_date]}
+  - {name: hours_in_day, type: row_condition, sql: "n_hours BETWEEN 1 AND 25", max_violation_pct: 0}
+  - {name: errors_non_negative, type: row_condition, sql: "mae >= 0 AND (baseline_mae IS NULL OR baseline_mae >= 0)", max_violation_pct: 0}
+  - {name: no_price_mape, type: row_condition, sql: "target <> 'price_eur_mwh' OR (mape IS NULL AND baseline_mape IS NULL)", max_violation_pct: 0}

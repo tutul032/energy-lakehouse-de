@@ -1,11 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 04_apply_contracts
-# MAGIC Applies `contracts/*.yaml` to the gold tables of the target schema (task `apply_contracts`
-# MAGIC of `daily_refresh_job`): table and column comments and tags where they differ from the
-# MAGIC contract, plus `USE SCHEMA` / `SELECT` grants for every consumer group. Idempotent: comments
-# MAGIC and tags are only written on drift, grants that exist are no-ops. Tags or consumers removed
-# MAGIC from a contract are not revoked automatically.
+# MAGIC Applies `contracts/*.yaml` to the contracted tables of the target schema (task
+# MAGIC `apply_contracts` of `daily_refresh_job`): table and column comments and tags where they
+# MAGIC differ from the contract, plus `USE SCHEMA` / `SELECT` grants for every consumer group.
+# MAGIC Idempotent: comments and tags are only written on drift, grants that exist are no-ops. Tags
+# MAGIC or consumers removed from a contract are not revoked automatically. Contracts with status
+# MAGIC `draft` or `retired` are skipped (`contracts.is_enforced`).
 
 # COMMAND ----------
 
@@ -33,6 +34,9 @@ errors = []
 
 for contract in contracts.load_contracts():
     table = contract.table
+    if not contracts.is_enforced(contract):
+        print(f"SKIPPED {table}: contract status {contract.status}")
+        continue
     columns = spark.sql(contracts.columns_query(catalog, schema, table)).collect()
     if not columns:
         summary.append((table, contract.version, 0, 1))

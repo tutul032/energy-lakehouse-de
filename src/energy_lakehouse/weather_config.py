@@ -30,5 +30,13 @@ HOURLY_VARIABLES: list[str] = [
     "cloud_cover",
 ]
 
-DEFAULT_PAST_DAYS = 63
+# Daily mode (forecast API): one week back for overlap; today + 2 days ahead, a margin so the full
+# local (Europe/Berlin) D+1 is covered whatever the UTC run time and DST. Longer history comes
+# from the archive API (--mode archive).
+DEFAULT_PAST_DAYS = 7
 MAX_PAST_DAYS = 92
+DEFAULT_FORECAST_DAYS = 3
+MAX_FORECAST_DAYS = 16
+
+# UTC run timestamp in daily file names: run_ts=20261022T0517Z.json (minute resolution).
+RUN_TS_FORMAT = "%Y%m%dT%H%MZ"

@@ -1,5 +1,6 @@
 # Daily refresh: energy_pipeline update, quality checks on silver/gold, then the gold data
-# contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness.
+# contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness;
+# finally the day-ahead forecast (score_forecast) and its accuracy (forecast_accuracy).
 # No schedule: GitHub Actions (.github/workflows/daily-refresh.yml) uploads fresh landing files
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
 # principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
@@ -17,6 +18,22 @@ resources:
       email_notifications:
         on_failure:
           - ${var.alert_email}
+      environments:
+        - environment_key: contracts
+          spec:
+            environment_version: "2"
+            dependencies:
+              - pydantic>=2.7
+              - pyyaml>=6
+        - environment_key: forecast
+          spec:
+            environment_version: "2"
+            dependencies:
+              - holidays==0.107
+              - scikit-learn==1.9.1
+              - mlflow==3.17.2
+              - pydantic>=2.7
+              - pyyaml>=6
       tasks:
         - task_key: run_pipeline
           pipeline_task:
@@ -33,6 +50,7 @@ resources:
         - task_key: apply_contracts
           depends_on:
             - task_key: quality_checks
+          environment_key: contracts
           notebook_task:
             notebook_path: ../src/notebooks/04_apply_contracts.py
             base_parameters:
@@ -41,8 +59,29 @@ resources:
         - task_key: verify_contracts
           depends_on:
             - task_key: apply_contracts
+          environment_key: contracts
           notebook_task:
             notebook_path: ../src/notebooks/05_verify_contracts.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+        # Day-ahead forecast for the local day D+1 with the champion models (train_forecast_job),
+        # then accuracy of all past forecasts against the actuals.
+        - task_key: score_forecast
+          depends_on:
+            - task_key: verify_contracts
+          environment_key: forecast
+          notebook_task:
+            notebook_path: ../src/notebooks/11_score_forecast.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+        - task_key: forecast_accuracy
+          depends_on:
+            - task_key: score_forecast
+          environment_key: forecast
+          notebook_task:
+            notebook_path: ../src/notebooks/12_forecast_accuracy.py
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"

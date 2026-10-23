@@ -1,0 +1,33 @@
+# Data contract for gold_weather_forecast_hourly (ODCS-inspired). Column names/types/descriptions
+# must match GOLD_WEATHER_FORECAST_HOURLY_COLUMNS in src/energy_lakehouse/transforms.py.
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+apiVersion: v1
+kind: DataContract
+id: energy.gold_weather_forecast_hourly
+version: 1.0.1
+status: active
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Open-Meteo day-ahead weather forecast aggregated by location role, one row per future UTC hour: load-centre temperature, onshore/offshore 100 m wind, solar radiation (Open-Meteo, CC BY 4.0). Built from the newest daily run per location; only hours after its issue time."
+table: gold_weather_forecast_hourly  # catalog/schema come from the target
+object_type: materialized_view
+grain: one row per hour_utc
+primary_key: [hour_utc]
+tags: {layer: gold, domain: energy, data_product: weather_forecast_hourly, license: CC-BY-4.0, source: open-meteo}
+sla: {freshness_hours: 30, freshness_column: issued_at, schedule: "daily ~05:17 UTC"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: hour_utc, type: TIMESTAMP, nullable: false, description: "Start of the hour (UTC)."}
+  - {name: hour_local, type: TIMESTAMP_NTZ, nullable: false, description: "Start of the hour, local wall-clock time (Europe/Berlin)."}
+  - {name: temperature_load_avg_c, type: DOUBLE, description: "Mean 2 m air temperature over the load-centre locations (deg C)."}
+  - {name: wind_speed_100m_onshore_avg_ms, type: DOUBLE, description: "Mean 100 m wind speed over the onshore-wind locations (m/s)."}
+  - {name: wind_speed_100m_offshore_ms, type: DOUBLE, description: "100 m wind speed at the offshore-wind location(s), averaged if several (m/s)."}
+  - {name: shortwave_radiation_solar_avg_wm2, type: DOUBLE, description: "Mean shortwave (global horizontal) radiation over the solar locations (W/m2)."}
+  - {name: issued_at, type: TIMESTAMP, nullable: false, description: "Newest run timestamp (UTC) of the forecast files behind this hour (issue time)."}
+quality:
+  - {name: unique_hour, type: unique, columns: [hour_utc]}
+  - {name: within_forecast_horizon, type: row_condition, sql: "hour_utc <= issued_at + INTERVAL 3 DAYS", max_violation_pct: 0}
+  - {name: wind_onshore_plausible, type: row_condition, sql: "wind_speed_100m_onshore_avg_ms IS NULL OR wind_speed_100m_onshore_avg_ms BETWEEN 0 AND 75", max_violation_pct: 0}
+  - {name: wind_offshore_plausible, type: row_condition, sql: "wind_speed_100m_offshore_ms IS NULL OR wind_speed_100m_offshore_ms BETWEEN 0 AND 75", max_violation_pct: 0}
+  - {name: temperature_plausible, type: row_condition, sql: "temperature_load_avg_c IS NULL OR temperature_load_avg_c BETWEEN -40 AND 50", max_violation_pct: 0}
+  - {name: radiation_plausible, type: row_condition, sql: "shortwave_radiation_solar_avg_wm2 IS NULL OR shortwave_radiation_solar_avg_wm2 BETWEEN 0 AND 1400", max_violation_pct: 0}

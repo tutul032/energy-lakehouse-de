@@ -21,14 +21,19 @@ src/energy_lakehouse/       # pure, unit-tested Python package
   http_utils.py             #   shared get_with_retry() (3 tries, backoff) + write_bytes()
   smard.py                  #   SMARD extractor: URL builders, fetch_index, extract() (requests only)
   weather_config.py         #   Open-Meteo locations (location_id, name, lat, lon, role) + variables
-  weather.py                #   Open-Meteo extractor: build_url, fetch, output_path, extract()
-  extract_local.py          #   CLI for local runs: --source {smard,weather,all}
-  transforms.py             #   pipeline helpers: path regexes, agg rules, gold columns,
-                            #   weather raw schema + role aggregation mapping
+  weather.py                #   Open-Meteo extractor: daily (build_url, output_path, extract) and
+                            #   archive (build_archive_url, archive_output_path, extract_archive)
+  extract_local.py          #   CLI for local runs: --source {smard,weather,all},
+                            #   weather --mode {daily,archive} --start/--end
+  transforms.py             #   pipeline helpers: path regexes + parse, agg rules, gold columns,
+                            #   weather raw schema + role aggregation mapping, forecast columns,
+                            #   CONTRACT_TABLE_COLUMNS / CONTRACT_TABLE_COMMENTS
+  forecast.py               #   day-ahead forecast (pandas): features (no leakage), seasonal naive,
+                            #   metrics, time_split, forecast/accuracy SQL
   quality.py                #   daily-refresh quality checks (thresholds, CheckResult, raise)
   contracts.py              #   data contracts: pydantic models, YAML loader, SQL renderers,
                             #   schema/quality/freshness checks, product-page markdown
-contracts/                  # data contracts, one <gold_table>.yaml each (ODCS-inspired)
+contracts/                  # data contracts, one <table>.yaml each (gold + silver_weather_forecast_hourly)
 src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
   bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
   silver.py                 #   silver_energy_long (MV, exploded + deduped + expectations)
@@ -36,10 +41,16 @@ src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energ
   bronze_weather.py         #   bronze_weather_raw (streaming table, Auto Loader)
   silver_weather.py         #   silver_weather_hourly (MV, arrays_zip + explode + dedupe)
   gold_weather.py           #   gold_energy_weather_hourly (MV, energy LEFT JOIN weather by role)
+  silver_weather_forecast.py #  silver_weather_forecast_hourly (MV, newest run per location, future hours)
+  gold_weather_forecast.py  #   gold_weather_forecast_hourly (MV, forecast by role, one row per hour)
 src/notebooks/              # Databricks notebooks (source format .py)
   03_quality_checks.py      #   quality_checks task of daily_refresh_job (uses quality.py)
   04_apply_contracts.py     #   apply_contracts task: comments/tags on drift + grants
   05_verify_contracts.py    #   verify_contracts task: schema, quality rules, freshness SLA
+  10_train_forecast.py      #   train_forecast_job task per target: HGB model vs baseline, MLflow, UC
+  11_score_forecast.py      #   score_forecast task: champion models -> gold_forecast_hourly (MERGE)
+  12_forecast_accuracy.py   #   forecast_accuracy task: gold_forecast_accuracy (INSERT OVERWRITE)
+  forecast_requirements.txt #   %pip pins for 10/11 (scikit-learn, mlflow, holidays, pandas)
 scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per source, $LASTEXITCODE checks)
 scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>.md (--check)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
@@ -66,8 +77,11 @@ uv sync                                    # create .venv, install dev deps
 uv run ruff check .                        # lint
 uv run ruff format .                       # format (CI runs --check)
 uv run pytest                              # unit tests (or: uv run python -m pytest)
-uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8 --past-days 63  # both
-uv run python -m energy_lakehouse.extract_local --source weather --past-days 63               # weather only
+uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8  # both (weather: daily mode)
+uv run python -m energy_lakehouse.extract_local --source weather                # weather only, past 7 days + today + 2 days
+# One-off weather history backfill (archive API), then upload it:
+uv run python -m energy_lakehouse.extract_local --source weather --mode archive --start 2026-08-01 --end 2026-10-15
+.\scripts\sync_landing.ps1 -Sources weather
 .\scripts\sync_landing.ps1                 # upload data/landing/{smard,weather} to the shared volume + verify
 .\scripts\sync_landing.ps1 -Sources weather -Overwrite
 uv run python scripts/render_contract_docs.py          # regenerate docs/data-products/*.md
@@ -79,7 +93,8 @@ databricks bundle run hello_job -t dev -p free
 databricks bundle run extract_smard_job -t dev -p free
 databricks bundle run energy_pipeline -t dev -p free                   # incremental update
 databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
-databricks bundle run daily_refresh_job -t dev -p free                 # pipeline + quality checks
+databricks bundle run daily_refresh_job -t dev -p free                 # pipeline, checks, contracts, forecast
+databricks bundle run train_forecast_job -t dev -p free                # train both forecasters (weekly in staging/prod)
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 databricks bundle validate -t staging -p free   # validate only; staging/prod deploy via CI
 databricks bundle validate -t prod    -p free
@@ -104,7 +119,8 @@ builds its own tables in its own schema.
 - Resource names are prefixed per target because all targets share one workspace (unprefixed
   staging/prod names collide, 409). Not needed with one workspace per target.
 - staging/prod permissions: CI/CD SP CAN_MANAGE, `alert_email` user CAN_MANAGE. The refresh SP
-  (`refresh_sp_app_id`) gets CAN_MANAGE_RUN on `daily_refresh_job` in every target.
+  (`refresh_sp_app_id`) gets CAN_MANAGE_RUN on `daily_refresh_job` and `train_forecast_job` in
+  every target.
 - Variables `cicd_sp_app_id`, `refresh_sp_app_id`, `alert_email` are set per target in
   `databricks.yml` (placeholders `REPLACE_WITH_...` until filled in).
 - The landing volume is not managed by the bundle and not created by notebooks/scripts. Readers
@@ -133,13 +149,23 @@ builds its own tables in its own schema.
   per series (default 2, `--refresh-latest`) are always re-downloaded so late-published hours get
   filled; bronze sets `cloudFiles.allowOverwrites` so Auto Loader re-ingests them. Tests never hit
   the network.
-- **Weather landing:** Open-Meteo `/v1/forecast` (no key), hourly `temperature_2m`,
-  `wind_speed_10m`, `wind_speed_100m`, `shortwave_radiation`, `cloud_cover`; UTC (`timezone=GMT`),
-  `timeformat=unixtime`, wind in m/s, `past_days` 0–92 (default 63) + `forecast_days=1`. Raw JSON
-  written unchanged to `<base>/weather/location=<id>/run_date=<yyyy-mm-dd>.json` (run date in UTC;
-  local or via `02_extract_weather` into the shared volume, widget `landing_root`). Existing files
-  skipped unless `--overwrite`. Consecutive runs
-  overlap; `silver_weather_hourly` dedupes them. Not yet wired into a job (run the notebook).
+- **Weather landing:** Open-Meteo (no key), hourly `temperature_2m`, `wind_speed_10m`,
+  `wind_speed_100m`, `shortwave_radiation`, `cloud_cover`; UTC (`timezone=GMT`),
+  `timeformat=unixtime`, wind in m/s (`wind_speed_unit=ms`). Raw JSON written unchanged. Two modes
+  (`extract_local --mode`):
+  - `daily` (default): `/v1/forecast`, `past_days` 0–92 (default 7) + `forecast_days=3` (today + 2:
+    margin so the full local D+1 is covered whatever the run time and DST) →
+    `<base>/weather/location=<id>/run_ts=<yyyymmddThhmmZ>.json` (UTC run timestamp, minute
+    resolution; local, CI, or via `02_extract_weather` into the shared volume, widget
+    `landing_root`). Every run writes new files, so a later run on the same day fetches a fresh
+    forecast; daily files are never overwritten (`--overwrite` does not apply). Consecutive runs
+    overlap; `silver_weather_hourly` dedupes them. Older files named
+    `run_date=<yyyy-mm-dd>.json` are still read (run time 00:00 UTC).
+  - `archive`: `https://archive-api.open-meteo.com/v1/archive` with `--start` / `--end`
+    (YYYY-MM-DD, inclusive, UTC; `--source weather` only; existing files skipped unless
+    `--overwrite`) → `<base>/weather/location=<id>/run_date=archive_<start>_<end>.json`. One-off
+    history backfill, run locally, then `sync_landing.ps1 -Sources weather`. The archive lags real
+    time by a few days; recent days may be NULL (dropped by `has_measurements`).
 - **Pipeline (`resources/energy_pipeline.yml`):** serverless, channel CURRENT, catalog/schema
   from bundle vars, sources globbed from `src/pipelines/**`. Use `from pyspark import pipelines
   as dp`. `root_path: ../src` puts `energy_lakehouse` on `sys.path` (fallback: config key
@@ -154,15 +180,50 @@ builds its own tables in its own schema.
   `valid_timestamp` fail, `non_negative_energy` warn) → `gold_energy_hourly` (MWh summed,
   EUR/MWh averaged per UTC hour) → `gold_energy_daily` (per Berlin calendar day, `hour_count`
   23/24/25). Assumes one resolution per filter in the landing zone.
-- **Weather tables:** `bronze_weather_raw` (one row per file; `location_id`, `run_date` from the
-  path; explicit schema from `transforms.weather_raw_schema()`) → `silver_weather_hourly` (one row
-  per `location_id`, `timestamp_utc`; hourly arrays zipped + exploded; newest
-  `file_modification_time` wins; forecast hours > now dropped; expectations `valid_timestamp`
-  fail, `has_measurements` drop, `plausible_temperature` / `plausible_wind` warn) →
-  `gold_energy_weather_hourly` (`gold_energy_hourly` LEFT JOIN weather per `hour_utc`; columns
-  from `transforms.WEATHER_ROLE_AGGS`: role → variable → avg). Gold column lists with comments
-  live in `transforms.py` (`GOLD_ENERGY_*_COLUMNS`, `gold_weather_columns()`); TIMESTAMP_NTZ
-  columns need `table_properties={"delta.feature.timestampNtz": "supported"}`.
+- **Weather tables:** `bronze_weather_raw` (one row per file; `location_id` and `run_ts_utc` from
+  the path: `run_ts=` → that UTC timestamp, old `run_date=` → 00:00 UTC of that day, archive →
+  00:00 UTC of the day after its end date; same rules in `transforms.parse_weather_landing_path`;
+  `run_date` = UTC date of `run_ts_utc`, NULL for archive files; explicit schema from
+  `transforms.weather_raw_schema()`) → `silver_weather_hourly` (observed hours: one row per
+  `location_id`, `timestamp_utc`; daily and archive files; hourly arrays zipped + exploded; newest
+  file wins, ordered by `run_ts_utc`, then `file_modification_time`; forecast hours > now dropped;
+  expectations `valid_timestamp` fail, `has_measurements` drop, `plausible_temperature` /
+  `plausible_wind` warn) → `gold_energy_weather_hourly` (`gold_energy_hourly` LEFT JOIN weather
+  per `hour_utc`; columns from `transforms.WEATHER_ROLE_AGGS`: role → variable → avg).
+  - Forecast branch: `bronze_weather_raw` → `silver_weather_forecast_hourly` (only the newest
+    daily file per location: max `run_ts_utc`, then newest `file_modification_time`; archive
+    files excluded; only hours `> run_ts_utc` = the forecast available at issue time; same
+    expectations) → `gold_weather_forecast_hourly` (same `WEATHER_ROLE_AGGS` per `hour_utc`, plus
+    `hour_local` and `issued_at` = max `run_ts_utc`).
+  - Column lists with comments live in `transforms.py` (`GOLD_ENERGY_*_COLUMNS`,
+    `gold_weather_columns()`, `gold_weather_forecast_columns()`,
+    `SILVER_WEATHER_FORECAST_HOURLY_COLUMNS`); TIMESTAMP_NTZ columns need
+    `table_properties={"delta.feature.timestampNtz": "supported"}`.
+- **Day-ahead forecast (`forecast.py`, notebooks 10–12):** targets `total_load_mwh`,
+  `price_eur_mwh`. Issued daily ~05:17 UTC on local day D for every hour of the `Europe/Berlin`
+  day D+1 (23/24/25 h). Only data available at issue time: history hours that ended by the issue
+  time, lags 48/72/168/336 h (`MIN_LAG_HOURS = 48`), same-hour mean of the last 7 available days
+  ≥ 48 h back; `build_features` raises `LeakageError` otherwise. Calendar: local hour, dow, month,
+  weekend, German public holiday (`holidays`, DE, nationwide). Weather by role: observed
+  (`gold_energy_weather_hourly`) for training, as a stand-in for historical forecasts; the issued
+  forecast (`gold_weather_forecast_hourly`, `issued_at` ≤ issue time) for scoring.
+  - `train_forecast_job` (Mondays 06:37 UTC; paused in dev): tasks `train_load` /
+    `train_price` run `10_train_forecast.py` (`HistGradientBoostingRegressor`, `MODEL_PARAMS`,
+    random_state 42; last 14 days test vs seasonal naive 168 h). MLflow experiment
+    `/Users/<current user>/energy_forecast_<target>`: params, `model_/baseline_mae` (+ `_mape`
+    for load only; price gets MAE only), forecast-vs-actual plot, permutation importance, model
+    with signature + input example. Registered as `<catalog>.<schema>.forecaster_<target>`; alias
+    `champion` moves only if model MAE < baseline MAE.
+  - `daily_refresh_job`: … → `verify_contracts` → `score_forecast` (`11_score_forecast.py`:
+    champions → `gold_forecast_hourly`, MERGE on `target_hour_utc, target, issue_date`; targets
+    without a champion are skipped with a warning) → `forecast_accuracy`
+    (`12_forecast_accuracy.py`: `gold_forecast_accuracy` per target and issue_date — n_hours, MAE,
+    MAPE, baseline MAE/MAPE — via `INSERT OVERWRITE`). Both tables are plain Delta tables created
+    `IF NOT EXISTS` from `GOLD_FORECAST_*_COLUMNS`.
+  - Libraries: serverless job `environments` only apply to non-notebook tasks, so 10/11
+    `%pip install -r forecast_requirements.txt` (same pins for training and scoring). Locally
+    `scikit-learn` and `mlflow` are dev dependencies; `pandas`, `holidays` are package
+    dependencies.
 - **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
   federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with
   `scripts/sync_landing.sh` and runs `databricks jobs run-now <vars.DATABRICKS_JOB_ID>`
@@ -177,17 +238,22 @@ builds its own tables in its own schema.
   The workflow triggers the prod job (`vars.DATABRICKS_JOB_ID` = prod job id). CI/CD deploys
   use secrets `DATABRICKS_CICD_CLIENT_ID` / `DATABRICKS_CICD_CLIENT_SECRET` (+ `DATABRICKS_HOST`).
   OIDC is used in the AWS chapter.
-- **Data contracts (`contracts/<table>.yaml`, one per gold table):** ODCS-inspired YAML parsed
+- **Data contracts (`contracts/<table>.yaml`, one per gold table + `silver_weather_forecast_hourly`):**
+  ODCS-inspired YAML parsed
   by `energy_lakehouse.contracts` (pydantic v2, `extra="forbid"`): id, semver `version`,
-  status, owner, description, table, `object_type: materialized_view`, grain, primary_key, tags,
+  status, owner, description, table, `object_type` (`materialized_view` for pipeline tables,
+  `table` for `gold_forecast_hourly` / `gold_forecast_accuracy`), grain, primary_key, tags,
   sla (`freshness_hours`, `freshness_column`, schedule), consumers (group + SELECT), columns
   (name, type, nullable, description), quality rules (`unique` / `not_null` / `row_condition`
   with `sql`, optional `where`, `max_violation_pct`; `{table}` in sql/where = the quoted table).
   Columns with `nullable: false` get an implicit `required_columns_not_null` rule.
-  - Single source: gold column lists (name, type, comment) and table comments live in
+  - Single source: column lists (name, type, comment) and table comments live in
     `transforms.py` (`GOLD_ENERGY_HOURLY_COLUMNS`, `GOLD_ENERGY_DAILY_COLUMNS`,
-    `GOLD_ENERGY_WEATHER_HOURLY_COLUMNS`, `GOLD_TABLE_COLUMNS`, `GOLD_TABLE_COMMENTS`) and are
-    used by the pipeline. `tests/test_contracts.py` fails unless each contract's column names,
+    `GOLD_ENERGY_WEATHER_HOURLY_COLUMNS`, `GOLD_WEATHER_FORECAST_HOURLY_COLUMNS`,
+    `GOLD_FORECAST_HOURLY_COLUMNS`, `GOLD_FORECAST_ACCURACY_COLUMNS`,
+    `SILVER_WEATHER_FORECAST_HOURLY_COLUMNS`; collected in `GOLD_TABLE_COLUMNS` /
+    `GOLD_TABLE_COMMENTS` and, for all contracted tables, `CONTRACT_TABLE_COLUMNS` /
+    `CONTRACT_TABLE_COMMENTS`) and are used by the pipeline and the forecast notebooks. `tests/test_contracts.py` fails unless each contract's column names,
     types and descriptions and its table description match them (breaking-change guard), and
     unless `docs/data-products/*.md` match the rendered contracts.
   - `daily_refresh_job`: `quality_checks` → `apply_contracts` (`04_apply_contracts.py`: table/
@@ -196,6 +262,10 @@ builds its own tables in its own schema.
     (`05_verify_contracts.py`: `information_schema.columns` names + `full_data_type`, quality
     rules, freshness; one result table, raises listing all failures). Consumer groups (e.g.
     `energy-consumers`) must exist in the workspace, else the GRANT fails the job.
+  - Status: 04/05 act only on `active` / `deprecated` contracts (`contracts.is_enforced`);
+    `draft` and `retired` are skipped. The forecast contracts start as `draft` (v0.1.0): their
+    tables are written after `verify_contracts` and stay empty until a champion exists. Once
+    forecasts flow, set `status: active` (PATCH bump) so they are enforced.
   - **How to change a contract:** change `transforms.py` (if the table changes) and the YAML
     together in one PR, bump `version`, run `uv run python scripts/render_contract_docs.py`,
     `uv run pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column

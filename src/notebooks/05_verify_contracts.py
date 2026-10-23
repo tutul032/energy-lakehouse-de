@@ -1,11 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 05_verify_contracts
-# MAGIC Verifies the gold tables of the target schema against `contracts/*.yaml` (task
+# MAGIC Verifies the contracted tables of the target schema against `contracts/*.yaml` (task
 # MAGIC `verify_contracts` of `daily_refresh_job`): (a) schema via `information_schema.columns`
 # MAGIC (missing/extra columns, type mismatches), (b) quality rules (violation % above
 # MAGIC `max_violation_pct`), (c) freshness (`sla.freshness_column` older than
 # MAGIC `sla.freshness_hours`). Prints one result table and fails listing every failed check.
+# MAGIC Contracts with status `draft` or `retired` are skipped (`contracts.is_enforced`).
 
 # COMMAND ----------
 
@@ -38,6 +39,9 @@ results = []
 
 for contract in contracts.load_contracts():
     table = contract.table
+    if not contracts.is_enforced(contract):
+        print(f"SKIPPED {table}: contract status {contract.status}")
+        continue
     columns = spark.sql(contracts.columns_query(catalog, schema, table)).collect()
     results.append(
         contracts.schema_check(contract, [(r["column_name"], r["full_data_type"]) for r in columns])

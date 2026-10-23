@@ -1,13 +1,19 @@
 """Offline tests for energy_lakehouse.transforms (no Spark)."""
 
-from datetime import date
+import re
+from datetime import UTC, date, datetime
 
 import pytest
 
 from energy_lakehouse import transforms, weather
 from energy_lakehouse.smard import output_path
 from energy_lakehouse.smard_config import SERIES, SmardSeries
-from energy_lakehouse.weather_config import HOURLY_VARIABLES, LOCATIONS, WeatherLocation
+from energy_lakehouse.weather_config import (
+    HOURLY_VARIABLES,
+    LOCATIONS,
+    RUN_TS_FORMAT,
+    WeatherLocation,
+)
 
 LOAD = SmardSeries(410, "total_load", "DE", "MWh")
 
@@ -82,15 +88,43 @@ def test_ddl_schema_escapes_quotes():
     assert ddl == "a DOUBLE COMMENT 'it\\'s', b DATE COMMENT 'plain'"
 
 
-def test_parse_weather_landing_path_roundtrips_extractor_output():
+def test_parse_weather_landing_path_run_ts_roundtrips_extractor_output():
     loc = WeatherLocation("north_sea", "North Sea", 54.5, 6.5, "offshore_wind")
-    path = weather.output_path("/Volumes/workspace/energy_dev/landing", loc, date(2026, 10, 19))
-    assert transforms.parse_weather_landing_path(path) == ("north_sea", "2026-10-19")
+    run_ts = datetime(2026, 10, 19, 5, 17, tzinfo=UTC)
+    path = weather.output_path("/Volumes/workspace/energy_dev/landing", loc, run_ts)
+    assert transforms.parse_weather_landing_path(path) == ("north_sea", run_ts, False)
+    assert re.search(transforms.RUN_TS_REGEX, path).group(1) == "20261019T0517Z"
+    assert not re.search(transforms.RUN_DATE_REGEX, path)
 
 
-def test_parse_weather_landing_path_windows_separators():
+def test_parse_weather_landing_path_old_run_date_is_midnight_utc():
     path = r"data\landing\weather\location=essen\run_date=2026-01-02.json"
-    assert transforms.parse_weather_landing_path(path) == ("essen", "2026-01-02")
+    midnight = datetime(2026, 1, 2, tzinfo=UTC)
+    assert transforms.parse_weather_landing_path(path) == ("essen", midnight, False)
+    assert not re.search(transforms.RUN_TS_REGEX, path)
+
+
+def test_parse_weather_landing_path_orders_old_before_new_naming_same_day():
+    old = transforms.parse_weather_landing_path("w/location=essen/run_date=2026-10-19.json")
+    new = transforms.parse_weather_landing_path("w/location=essen/run_ts=20261019T0517Z.json")
+    later = transforms.parse_weather_landing_path("w/location=essen/run_ts=20261019T1130Z.json")
+    assert old[1] < new[1] < later[1]
+
+
+def test_parse_weather_landing_path_archive_is_day_after_end():
+    loc = WeatherLocation("essen", "Essen", 51.46, 7.01, "load")
+    path = weather.archive_output_path("data/landing", loc, date(2026, 8, 1), date(2026, 10, 15))
+    run_ts = datetime(2026, 10, 16, tzinfo=UTC)
+    assert transforms.parse_weather_landing_path(path) == ("essen", run_ts, True)
+    assert re.search(transforms.ARCHIVE_RUN_REGEX, path).groups() == ("2026-08-01", "2026-10-15")
+    assert not re.search(transforms.RUN_DATE_REGEX, path)
+    assert not re.search(transforms.RUN_TS_REGEX, path)
+
+
+def test_run_ts_spark_format_matches_python_format():
+    # yyyyMMdd'T'HHmm'Z' (Java) <-> %Y%m%dT%H%MZ (Python): same fields, same literals.
+    assert RUN_TS_FORMAT == "%Y%m%dT%H%MZ"
+    assert transforms.RUN_TS_SPARK_FORMAT == "yyyyMMdd'T'HHmm'Z'"
 
 
 def test_parse_weather_landing_path_rejects_other_files():
@@ -157,3 +191,34 @@ def test_gold_weather_columns_extend_hourly_columns():
     assert ("hour_local", "TIMESTAMP_NTZ") in [(n, t) for n, t, _ in cols]
     assert all(comment for _, _, comment in cols)
     assert len(set(names)) == len(names)
+
+
+def test_gold_weather_forecast_columns_reuse_role_aggs():
+    cols = transforms.gold_weather_forecast_columns()
+    names = [name for name, _, _ in cols]
+    assert names == [
+        "hour_utc",
+        "hour_local",
+        *[a.column for a in transforms.WEATHER_ROLE_AGGS],
+        "issued_at",
+    ]
+    observed = {n: (t, c) for n, t, c in transforms.GOLD_ENERGY_WEATHER_HOURLY_COLUMNS}
+    assert all(observed[n] == (t, c) for n, t, c in cols if n != "issued_at")
+    assert transforms.GOLD_TABLE_COLUMNS["gold_weather_forecast_hourly"] == cols
+
+
+def test_silver_weather_forecast_columns_cover_all_variables():
+    cols = transforms.SILVER_WEATHER_FORECAST_HOURLY_COLUMNS
+    names = [name for name, _, _ in cols]
+    assert set(HOURLY_VARIABLES) <= set(names)
+    assert {"location_id", "timestamp_utc", "run_date", "run_ts_utc", "ingested_at"} <= set(names)
+    assert len(set(names)) == len(names)
+    assert all(comment for _, _, comment in cols)
+
+
+def test_contract_tables_are_gold_plus_forecast_silver():
+    assert set(transforms.CONTRACT_TABLE_COLUMNS) == {
+        *transforms.GOLD_TABLE_COLUMNS,
+        "silver_weather_forecast_hourly",
+    }
+    assert set(transforms.CONTRACT_TABLE_COMMENTS) == set(transforms.CONTRACT_TABLE_COLUMNS)

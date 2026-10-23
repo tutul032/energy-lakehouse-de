@@ -7,8 +7,15 @@
 # DATABRICKS_CONFIG_PROFILE=free instead.
 #
 # Settings (env, optional): LANDING_ROOT (/Volumes/workspace/energy_raw/landing, shared by all
-# targets; must already exist), LOCAL_DIR (data/landing), SMARD_WEEKS (8), PAST_DAYS (63).
+# targets; must already exist), LOCAL_DIR (data/landing), SMARD_WEEKS (8), PAST_DAYS (7).
 # The extractor log goes to $LOCAL_DIR/logs/.
+#
+# Weather runs in daily mode: forecast API with PAST_DAYS back + today + 2 days, one new
+# run_ts=<yyyymmddThhmmZ>.json file per run, so the newest file holds the day-ahead forecast.
+# History is backfilled once (not by this script) with the archive API, which writes
+# run_date=archive_<start>_<end>.json; this script uploads those too:
+#   uv run python -m energy_lakehouse.extract_local --source weather --mode archive \
+#     --start 2026-08-01 --end 2026-10-15
 #
 # Uploads use --overwrite so the re-downloaded newest SMARD chunks replace older copies; bronze
 # re-ingests overwritten files (cloudFiles.allowOverwrites) and silver dedupes them.
@@ -20,7 +27,7 @@ set -euo pipefail
 LANDING_ROOT="${LANDING_ROOT:-/Volumes/workspace/energy_raw/landing}"
 LOCAL_DIR="${LOCAL_DIR:-data/landing}"
 SMARD_WEEKS="${SMARD_WEEKS:-8}"
-PAST_DAYS="${PAST_DAYS:-63}"
+PAST_DAYS="${PAST_DAYS:-7}"
 SOURCES=(smard weather)
 
 fail() {
