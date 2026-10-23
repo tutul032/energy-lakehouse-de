@@ -1,12 +1,12 @@
-"""Job environment guard: notebook tasks that import energy_lakehouse.forecast need its libraries.
+"""Job environment guard: notebook tasks that import the ML modules need their libraries.
 
 Parses resources/*.yml; for every notebook task whose notebook source imports
-energy_lakehouse.forecast (regex), the task's `environment_key` must point to a job environment
-whose dependencies list holidays, scikit-learn and mlflow. Those packages must also be declared
-in pyproject.toml (dependencies or dependency groups). No job environment may install a
-library the serverless runtime provides (conflicts break Spark initialization in notebooks), and
-no notebook may install packages itself (`%pip`, `restartPython`): job environments are the only
-mechanism.
+energy_lakehouse.forecast or energy_lakehouse.anomalies (regex), the task's `environment_key`
+must point to a job environment whose dependencies list holidays, scikit-learn and mlflow.
+Those packages must also be declared in pyproject.toml (dependencies or dependency groups). No
+job environment may install a library the serverless runtime provides (conflicts break Spark
+initialization in notebooks), and no notebook may install packages itself (`%pip`,
+`restartPython`): job environments are the only mechanism.
 """
 
 import re
@@ -31,9 +31,9 @@ FORBIDDEN_PACKAGES = {
 }
 
 FORECAST_IMPORT_RE = re.compile(
-    r"^\s*(?:from\s+energy_lakehouse\s+import\s+[^\n]*\bforecast\b"
-    r"|from\s+energy_lakehouse\.forecast\s+import\b"
-    r"|import\s+energy_lakehouse\.forecast\b)",
+    r"^\s*(?:from\s+energy_lakehouse\s+import\s+[^\n]*\b(?:forecast|anomalies)\b"
+    r"|from\s+energy_lakehouse\.(?:forecast|anomalies)\s+import\b"
+    r"|import\s+energy_lakehouse\.(?:forecast|anomalies)\b)",
     re.MULTILINE,
 )
 REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
@@ -47,7 +47,7 @@ def package_name(requirement: str) -> str:
 
 
 def imports_forecast(source: str) -> bool:
-    """True if notebook source imports energy_lakehouse.forecast."""
+    """True if notebook source imports energy_lakehouse.forecast or energy_lakehouse.anomalies."""
     return FORECAST_IMPORT_RE.search(source) is not None
 
 
@@ -101,11 +101,21 @@ def test_imports_forecast():
     assert imports_forecast("import energy_lakehouse.forecast as fc\n")
     assert not imports_forecast("from energy_lakehouse import contracts\n")
     assert not imports_forecast("from energy_lakehouse.forecasting import x\n")
+    assert imports_forecast("from energy_lakehouse import anomalies, forecast\n")
+    assert imports_forecast("from energy_lakehouse.anomalies import completeness\n")
+    assert not imports_forecast("from energy_lakehouse.anomaly import x\n")
 
 
 def test_forecast_notebook_tasks_found():
     task_keys = {key for _, key, _, _ in forecast_notebook_tasks()}
-    assert {"score_forecast", "forecast_accuracy", "train_load", "train_price"} <= task_keys
+    assert {
+        "score_forecast",
+        "forecast_accuracy",
+        "train_load",
+        "train_price",
+        "detect_anomalies",
+        "dq_summary_llm",
+    } <= task_keys
 
 
 def test_forecast_tasks_have_environment_with_required_packages():
