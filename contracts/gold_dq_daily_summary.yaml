@@ -1,0 +1,30 @@
+# Data contract for gold_dq_daily_summary (ODCS-inspired). Column names/types/descriptions must
+# match GOLD_DQ_DAILY_SUMMARY_COLUMNS in src/energy_lakehouse/transforms.py (tests/test_contracts.py).
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags/status = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+# status draft: the table is created by detect_anomalies, which runs after verify_contracts; after
+# the first daily runs set status: active and bump the PATCH version.
+apiVersion: v1
+kind: DataContract
+id: energy.gold_dq_daily_summary
+version: 0.1.0
+status: draft
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Daily anomaly counts per check and severity from the detect_anomalies run of each local (Europe/Berlin) day; checks that found nothing have n = 0. One row per detection_date, check_name and severity."
+table: gold_dq_daily_summary         # catalog/schema come from the target
+object_type: table                   # Delta table written by 20_detect_anomalies (INSERT ... REPLACE WHERE)
+grain: one row per detection_date, check_name and severity
+primary_key: [detection_date, check_name, severity]
+tags: {layer: gold, domain: data_quality, data_product: energy_dq_daily_summary, source: smard+open-meteo}
+# Every run writes one row per check and severity (n = 0 included), so the table is fresh daily.
+sla: {freshness_hours: 48, freshness_column: detection_date, schedule: "daily ~05:17 UTC (detect_anomalies task)"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: detection_date, type: DATE, nullable: false, description: "Local (Europe/Berlin) day of the detection run."}
+  - {name: check_name, type: STRING, nullable: false, description: "Detector (see gold_dq_anomalies.check_name)."}
+  - {name: severity, type: STRING, nullable: false, description: "critical or warning."}
+  - {name: n, type: BIGINT, nullable: false, description: "Rows flagged by the check with this severity in the run (0 = none)."}
+quality:
+  - {name: unique_day_check_severity, type: unique, columns: [detection_date, check_name, severity]}
+  - {name: known_severity, type: row_condition, sql: "severity IN ('critical', 'warning')", max_violation_pct: 0}
+  - {name: n_non_negative, type: row_condition, sql: "n >= 0", max_violation_pct: 0}

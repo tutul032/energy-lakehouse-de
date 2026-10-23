@@ -31,9 +31,11 @@ src/energy_lakehouse/       # pure, unit-tested Python package
   forecast.py               #   day-ahead forecast (pandas): features (no leakage), seasonal naive,
                             #   metrics, time_split, forecast/accuracy SQL
   quality.py                #   daily-refresh quality checks (thresholds, CheckResult, raise)
+  anomalies.py              #   ML-assisted DQ (pandas): seasonal robust z, IsolationForest,
+                            #   completeness, physics rules, forecast drift; summary/MERGE SQL, LLM prompt
   contracts.py              #   data contracts: pydantic models, YAML loader, SQL renderers,
                             #   schema/quality/freshness checks, product-page markdown
-contracts/                  # data contracts, one <table>.yaml each (gold + silver_weather_forecast_hourly)
+contracts/                  # data contracts, one <table>.yaml each (gold incl. gold_dq_* + silver_weather_forecast_hourly)
 src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
   bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
   silver.py                 #   silver_energy_long (MV, exploded + deduped + expectations)
@@ -50,7 +52,8 @@ src/notebooks/              # Databricks notebooks (source format .py)
   10_train_forecast.py      #   train_forecast_job task per target: HGB model vs baseline, MLflow, UC
   11_score_forecast.py      #   score_forecast task: champion models -> gold_forecast_hourly (MERGE)
   12_forecast_accuracy.py   #   forecast_accuracy task: gold_forecast_accuracy (INSERT OVERWRITE)
-  forecast_requirements.txt #   %pip pins for 10/11 (scikit-learn, mlflow, holidays, pandas)
+  20_detect_anomalies.py    #   detect_anomalies task: gold_dq_anomalies (MERGE) + gold_dq_daily_summary
+  21_dq_summary_llm.py      #   dq_summary_llm task: optional ai_query summary -> gold_dq_daily_summary_text
 scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per source, $LASTEXITCODE checks)
 scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>.md (--check)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
@@ -93,7 +96,8 @@ databricks bundle run hello_job -t dev -p free
 databricks bundle run extract_smard_job -t dev -p free
 databricks bundle run energy_pipeline -t dev -p free                   # incremental update
 databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
-databricks bundle run daily_refresh_job -t dev -p free                 # pipeline, checks, contracts, forecast
+databricks bundle run daily_refresh_job -t dev -p free                 # pipeline, checks, contracts, forecast, DQ
+databricks bundle run daily_refresh_job -t dev -p free --params inject_test_anomaly=true  # + TEST:total_load anomaly
 databricks bundle run train_forecast_job -t dev -p free                # train both forecasters (weekly in staging/prod)
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 databricks bundle validate -t staging -p free   # validate only; staging/prod deploy via CI
@@ -220,10 +224,46 @@ builds its own tables in its own schema.
     (`12_forecast_accuracy.py`: `gold_forecast_accuracy` per target and issue_date — n_hours, MAE,
     MAPE, baseline MAE/MAPE — via `INSERT OVERWRITE`). Both tables are plain Delta tables created
     `IF NOT EXISTS` from `GOLD_FORECAST_*_COLUMNS`.
-  - Libraries: serverless job `environments` only apply to non-notebook tasks, so 10/11
-    `%pip install -r forecast_requirements.txt` (same pins for training and scoring). Locally
+  - Libraries: only via job `environments` (`environment_key` on the notebook task; environment
+    `forecast` pins holidays/scikit-learn/mlflow, the same for training and scoring). Never
+    `%pip` or `restartPython` in notebooks, never install runtime-provided packages (numpy,
+    pandas, pyarrow, pyspark, ...); `tests/test_job_environments.py` enforces this. Locally
     `scikit-learn` and `mlflow` are dev dependencies; `pandas`, `holidays` are package
     dependencies.
+- **ML-assisted data quality (`anomalies.py`, notebooks 20–21):** pandas only, Spark-free. Every
+  detector returns `ANOMALY_COLUMNS` (check_name, entity, ts_utc, value, expected, lower, upper,
+  score ≥ 0, severity `critical`|`warning`, reason) for the last 7 days:
+  - `seasonal_robust_z` on `silver_energy_long` (entity = series name, `day_ahead_price`
+    excluded: negative/spiky prices are often real): per entity and local hour-of-week, median
+    and MAD of the previous 8 weeks (current point excluded), z = 0.6745·(x − median)/MAD;
+    skipped if MAD = 0 or < 5 history points; |z| ≥ 4 warning, ≥ 8 critical.
+  - `multivariate_isolation_forest` on `gold_energy_weather_hourly` (load, price, solar, wind
+    on/off, lignite, gas, on/offshore wind speed, radiation, local-hour sin/cos), contamination
+    0.005, random_state 42; warning only. Trained on the last 365 days **including** the scored
+    week and `max_samples=1.0` (IF cannot isolate points it has not seen; with 256 samples a
+    single outlier is in ~3 % of trees). Reason: top 3 features by robust z vs the training
+    median of the same local hour. scikit-learn is imported inside the function (Smart App
+    Control can block scipy DLLs locally; its tests skip there but never in CI).
+  - `completeness` per series and local day for the 7 complete days before today: expected
+    23/24/25 h vs distinct non-null hours; > 20 % missing critical, > 5 % warning.
+  - `physics_rules`: `solar_mwh > 100` while `shortwave_radiation_solar_avg_wm2 < 1` at both H
+    and H+1 (Open-Meteo radiation is the mean of the *preceding* hour) → critical.
+  - `forecast_drift` on `gold_forecast_accuracy`: MAE > baseline MAE on 3 consecutive issue
+    dates → warning (`forecast_drift_mae`); MAPE > 6 % on 2 consecutive dates → critical
+    (`forecast_drift_mape`, load only). Empty input → no rows.
+  - `daily_refresh_job`: … → `forecast_accuracy` → `detect_anomalies`
+    (`20_detect_anomalies.py`, environment `forecast`): fails if a scored input window is empty
+    ("no silent success"), MERGEs into `gold_dq_anomalies` on (check_name, entity, ts_utc)
+    (`detected_at` = latest run), writes `gold_dq_daily_summary` (every check × severity, n = 0
+    included) with `INSERT INTO … REPLACE WHERE detection_date = …`, prints the summary, then
+    raises listing every critical row (entities `TEST:` excluded). German dates come from
+    `anomalies.LOCAL_TODAY_SQL` = `to_date(from_utc_timestamp(current_timestamp(), 'Europe/Berlin'))`.
+    Job parameter `inject_test_anomaly` (default `"false"`; the notebook refuses schemas not
+    ending in `_dev`) adds `TEST:total_load`, a copy of total_load with the most recent complete
+    hour × 0.5. → `dq_summary_llm` (`21_dq_summary_llm.py`, `run_if: ALL_DONE`): job parameter
+    `dq_llm_endpoint` (default empty = skip); otherwise `ai_query(endpoint, prompt)` from today's
+    summary + top 10 anomalies → `gold_dq_daily_summary_text` (no contract); any error is a
+    warning, never a failure.
 - **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
   federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with
   `scripts/sync_landing.sh` and runs `databricks jobs run-now <vars.DATABRICKS_JOB_ID>`
@@ -242,7 +282,7 @@ builds its own tables in its own schema.
   ODCS-inspired YAML parsed
   by `energy_lakehouse.contracts` (pydantic v2, `extra="forbid"`): id, semver `version`,
   status, owner, description, table, `object_type` (`materialized_view` for pipeline tables,
-  `table` for `gold_forecast_hourly` / `gold_forecast_accuracy`), grain, primary_key, tags,
+  `table` for `gold_forecast_hourly` / `gold_forecast_accuracy` / `gold_dq_*`), grain, primary_key, tags,
   sla (`freshness_hours`, `freshness_column`, schedule), consumers (group + SELECT), columns
   (name, type, nullable, description), quality rules (`unique` / `not_null` / `row_condition`
   with `sql`, optional `where`, `max_violation_pct`; `{table}` in sql/where = the quoted table).
@@ -251,6 +291,7 @@ builds its own tables in its own schema.
     `transforms.py` (`GOLD_ENERGY_HOURLY_COLUMNS`, `GOLD_ENERGY_DAILY_COLUMNS`,
     `GOLD_ENERGY_WEATHER_HOURLY_COLUMNS`, `GOLD_WEATHER_FORECAST_HOURLY_COLUMNS`,
     `GOLD_FORECAST_HOURLY_COLUMNS`, `GOLD_FORECAST_ACCURACY_COLUMNS`,
+    `GOLD_DQ_ANOMALIES_COLUMNS`, `GOLD_DQ_DAILY_SUMMARY_COLUMNS`,
     `SILVER_WEATHER_FORECAST_HOURLY_COLUMNS`; collected in `GOLD_TABLE_COLUMNS` /
     `GOLD_TABLE_COMMENTS` and, for all contracted tables, `CONTRACT_TABLE_COLUMNS` /
     `CONTRACT_TABLE_COMMENTS`) and are used by the pipeline and the forecast notebooks. `tests/test_contracts.py` fails unless each contract's column names,
@@ -265,7 +306,9 @@ builds its own tables in its own schema.
   - Status: 04/05 act only on `active` / `deprecated` contracts (`contracts.is_enforced`);
     `draft` and `retired` are skipped. The forecast contracts start as `draft` (v0.1.0): their
     tables are written after `verify_contracts` and stay empty until a champion exists. Once
-    forecasts flow, set `status: active` (PATCH bump) so they are enforced.
+    forecasts flow, set `status: active` (PATCH bump) so they are enforced. Same for
+    `gold_dq_anomalies` / `gold_dq_daily_summary` (draft v0.1.0, created by `detect_anomalies`
+    after `verify_contracts`): activate after the first daily runs.
   - **How to change a contract:** change `transforms.py` (if the table changes) and the YAML
     together in one PR, bump `version`, run `uv run python scripts/render_contract_docs.py`,
     `uv run pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column

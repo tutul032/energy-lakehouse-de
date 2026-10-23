@@ -1,0 +1,41 @@
+# Data contract for gold_dq_anomalies (ODCS-inspired). Column names/types/descriptions must
+# match GOLD_DQ_ANOMALIES_COLUMNS in src/energy_lakehouse/transforms.py (tests/test_contracts.py).
+# Versioning (semver): remove/rename a column or change a type = MAJOR, add a column = MINOR,
+# descriptions/rules/tags/status = PATCH. Regenerate docs: uv run python scripts/render_contract_docs.py
+# status draft: the table is created by detect_anomalies, which runs after verify_contracts; after
+# the first daily runs set status: active and bump the PATCH version.
+apiVersion: v1
+kind: DataContract
+id: energy.gold_dq_anomalies
+version: 0.1.0
+status: draft
+owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
+description: "Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-scores per SMARD series, an IsolationForest over the hourly gold features, completeness per series and local day, physics rules and forecast drift. One row per check_name, entity and ts_utc; a re-detection updates the row."
+table: gold_dq_anomalies             # catalog/schema come from the target
+object_type: table                   # Delta table written by 20_detect_anomalies (MERGE)
+grain: one row per check_name, entity and ts_utc
+primary_key: [check_name, entity, ts_utc]
+tags: {layer: gold, domain: data_quality, data_product: energy_dq_anomalies, source: smard+open-meteo}
+# Rows only appear when something is flagged; the isolation forest alone flags ~0.5 % of hours
+# (about one per week), so two weeks without any detection means the task is not running.
+sla: {freshness_hours: 336, freshness_column: detected_at, schedule: "daily ~05:17 UTC (detect_anomalies task)"}
+consumers: [{group: energy-consumers, access: SELECT}]
+columns:
+  - {name: check_name, type: STRING, nullable: false, description: "Detector that flagged the row (seasonal_robust_z, isolation_forest, completeness, physics_solar_at_night, forecast_drift_mae, forecast_drift_mape)."}
+  - {name: entity, type: STRING, nullable: false, description: "What was checked: SMARD series, gold column/table or forecast target; the prefix TEST: marks an injected test anomaly."}
+  - {name: ts_utc, type: TIMESTAMP, nullable: false, description: "Start of the flagged hour (UTC); for daily checks the start of the local (Europe/Berlin) day."}
+  - {name: value, type: DOUBLE, description: "Observed value (entity unit; completeness: present hours; isolation_forest: anomaly score)."}
+  - {name: expected, type: DOUBLE, description: "Expected value (seasonal median, expected hours, baseline MAE); NULL if not applicable."}
+  - {name: lower, type: DOUBLE, description: "Lower bound of the normal range; NULL if not applicable."}
+  - {name: upper, type: DOUBLE, description: "Upper bound of the normal range or threshold; NULL if not applicable."}
+  - {name: score, type: DOUBLE, nullable: false, description: "Anomaly strength, higher = more abnormal (|robust z|, missing %, ratio to threshold)."}
+  - {name: severity, type: STRING, nullable: false, description: "critical or warning."}
+  - {name: reason, type: STRING, nullable: false, description: "Short human-readable explanation."}
+  - {name: detected_at, type: TIMESTAMP, nullable: false, description: "Start (UTC) of the latest detection run that flagged the row."}
+quality:
+  - {name: unique_anomaly, type: unique, columns: [check_name, entity, ts_utc]}
+  - {name: known_check, type: row_condition, sql: "check_name IN ('seasonal_robust_z', 'isolation_forest', 'completeness', 'physics_solar_at_night', 'forecast_drift_mae', 'forecast_drift_mape')", max_violation_pct: 0}
+  - {name: known_severity, type: row_condition, sql: "severity IN ('critical', 'warning')", max_violation_pct: 0}
+  - {name: isolation_forest_warning_only, type: row_condition, sql: "check_name <> 'isolation_forest' OR severity = 'warning'", max_violation_pct: 0}
+  - {name: score_non_negative, type: row_condition, sql: "score >= 0", max_violation_pct: 0}
+  - {name: detected_after_ts, type: row_condition, sql: "detected_at >= ts_utc", max_violation_pct: 0}

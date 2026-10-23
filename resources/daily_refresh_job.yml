@@ -1,6 +1,8 @@
 # Daily refresh: energy_pipeline update, quality checks on silver/gold, then the gold data
 # contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness;
-# finally the day-ahead forecast (score_forecast) and its accuracy (forecast_accuracy).
+# then the day-ahead forecast (score_forecast) and its accuracy (forecast_accuracy); finally
+# ML-assisted data quality (detect_anomalies -> gold_dq_anomalies / gold_dq_daily_summary) and an
+# optional LLM summary of it (dq_summary_llm, skipped while dq_llm_endpoint is empty).
 # No schedule: GitHub Actions (.github/workflows/daily-refresh.yml) uploads fresh landing files
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
 # principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
@@ -15,6 +17,13 @@ resources:
           default: ${var.catalog}
         - name: schema
           default: ${var.schema}
+        # "true" adds a marked TEST:total_load anomaly (dev schemas only; the notebook refuses
+        # others). Override per run: --params inject_test_anomaly=true
+        - name: inject_test_anomaly
+          default: "false"
+        # Model serving endpoint for ai_query (e.g. a Foundation Model API endpoint); empty = skip.
+        - name: dq_llm_endpoint
+          default: ""
       email_notifications:
         on_failure:
           - ${var.alert_email}
@@ -85,6 +94,30 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+        # Anomaly detection needs scikit-learn (IsolationForest): same environment as forecasting.
+        - task_key: detect_anomalies
+          depends_on:
+            - task_key: forecast_accuracy
+          environment_key: forecast
+          notebook_task:
+            notebook_path: ../src/notebooks/20_detect_anomalies.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              inject_test_anomaly: "{{job.parameters.inject_test_anomaly}}"
+        # ALL_DONE: also summarize when detect_anomalies failed on a critical anomaly (it writes
+        # its tables before raising). The notebook itself never fails.
+        - task_key: dq_summary_llm
+          depends_on:
+            - task_key: detect_anomalies
+          run_if: ALL_DONE
+          environment_key: forecast
+          notebook_task:
+            notebook_path: ../src/notebooks/21_dq_summary_llm.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              endpoint: "{{job.parameters.dq_llm_endpoint}}"
       permissions:
         - service_principal_name: ${var.refresh_sp_app_id}
           level: CAN_MANAGE_RUN

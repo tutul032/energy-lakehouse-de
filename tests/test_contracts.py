@@ -23,6 +23,9 @@ NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
 ids = [c.table for c in CONTRACTS]
 FORECAST_TABLES = ("gold_forecast_hourly", "gold_forecast_accuracy")
+DQ_TABLES = ("gold_dq_anomalies", "gold_dq_daily_summary")
+# Plain Delta tables written by notebooks after verify_contracts; their contracts start as draft.
+NOTEBOOK_TABLES = (*FORECAST_TABLES, *DQ_TABLES)
 
 
 def _minimal(**overrides) -> dict:
@@ -80,8 +83,8 @@ def test_descriptions_match_pipeline_comments(contract):
 @pytest.mark.parametrize("contract", CONTRACTS, ids=ids)
 def test_contract_metadata(contract):
     assert contract.id == f"energy.{contract.table}"
-    # Pipeline tables are materialized views; the forecast tables are written by notebooks.
-    expected = "table" if contract.table in FORECAST_TABLES else "materialized_view"
+    # Pipeline tables are materialized views; forecast and DQ tables are written by notebooks.
+    expected = "table" if contract.table in NOTEBOOK_TABLES else "materialized_view"
     assert contract.object_type == expected
     assert contract.consumers and contract.quality
     assert contract.tags["layer"] == contract.table.split("_")[0]  # gold / silver
@@ -168,10 +171,10 @@ def test_is_enforced_by_status(status, enforced):
     assert contracts.is_enforced(contract) is enforced
 
 
-def test_pipeline_contracts_enforced_forecast_contracts_draft():
-    # Forecast tables appear only after the first scoring run; their contracts start as draft.
+def test_pipeline_contracts_enforced_notebook_contracts_draft():
+    # Forecast/DQ tables appear only after their first notebook run; contracts start as draft.
     for contract in CONTRACTS:
-        assert contracts.is_enforced(contract) is (contract.table not in FORECAST_TABLES)
+        assert contracts.is_enforced(contract) is (contract.table not in NOTEBOOK_TABLES)
 
 
 # --- rendered SQL snapshots (gold_energy_hourly) ---------------------------------------------

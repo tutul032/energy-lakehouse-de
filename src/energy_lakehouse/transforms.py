@@ -338,6 +338,70 @@ GOLD_FORECAST_ACCURACY_COLUMNS: list[tuple[str, str, str]] = [
     ),
 ]
 
+# Data-quality anomalies (written by 20_detect_anomalies, MERGE): one row per check, entity, time.
+GOLD_DQ_ANOMALIES_COLUMNS: list[tuple[str, str, str]] = [
+    (
+        "check_name",
+        "STRING",
+        "Detector that flagged the row (seasonal_robust_z, isolation_forest, completeness, "
+        "physics_solar_at_night, forecast_drift_mae, forecast_drift_mape).",
+    ),
+    (
+        "entity",
+        "STRING",
+        "What was checked: SMARD series, gold column/table or forecast target; the prefix TEST: "
+        "marks an injected test anomaly.",
+    ),
+    (
+        "ts_utc",
+        "TIMESTAMP",
+        f"Start of the flagged hour (UTC); for daily checks the start of the local ({LOCAL_TZ}) "
+        "day.",
+    ),
+    (
+        "value",
+        "DOUBLE",
+        "Observed value (entity unit; completeness: present hours; isolation_forest: anomaly "
+        "score).",
+    ),
+    (
+        "expected",
+        "DOUBLE",
+        "Expected value (seasonal median, expected hours, baseline MAE); NULL if not applicable.",
+    ),
+    ("lower", "DOUBLE", "Lower bound of the normal range; NULL if not applicable."),
+    ("upper", "DOUBLE", "Upper bound of the normal range or threshold; NULL if not applicable."),
+    (
+        "score",
+        "DOUBLE",
+        "Anomaly strength, higher = more abnormal (|robust z|, missing %, ratio to threshold).",
+    ),
+    ("severity", "STRING", "critical or warning."),
+    ("reason", "STRING", "Short human-readable explanation."),
+    ("detected_at", "TIMESTAMP", "Start (UTC) of the latest detection run that flagged the row."),
+]
+
+# Daily anomaly counts (written by 20_detect_anomalies): one row per day, check and severity.
+GOLD_DQ_DAILY_SUMMARY_COLUMNS: list[tuple[str, str, str]] = [
+    ("detection_date", "DATE", f"Local ({LOCAL_TZ}) day of the detection run."),
+    ("check_name", "STRING", "Detector (see gold_dq_anomalies.check_name)."),
+    ("severity", "STRING", "critical or warning."),
+    ("n", "BIGINT", "Rows flagged by the check with this severity in the run (0 = none)."),
+]
+
+# Optional LLM summary of the day's anomalies (21_dq_summary_llm); no data contract.
+GOLD_DQ_DAILY_SUMMARY_TEXT_COLUMNS: list[tuple[str, str, str]] = [
+    ("detection_date", "DATE", f"Local ({LOCAL_TZ}) day of the detection run."),
+    ("endpoint", "STRING", "Model serving endpoint called with ai_query."),
+    ("prompt", "STRING", "Prompt sent to the endpoint."),
+    ("summary_text", "STRING", "Generated summary of the day's data-quality anomalies."),
+    ("generated_at", "TIMESTAMP", "When the summary was generated (UTC)."),
+]
+GOLD_DQ_DAILY_SUMMARY_TEXT_COMMENT = (
+    "LLM-written summary (ai_query) of gold_dq_daily_summary and the top anomalies per local "
+    "day. One row per detection_date."
+)
+
 # Single source for the gold schemas: used by the pipeline and checked against contracts/*.yaml.
 GOLD_TABLE_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "gold_energy_hourly": GOLD_ENERGY_HOURLY_COLUMNS,
@@ -346,6 +410,8 @@ GOLD_TABLE_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "gold_weather_forecast_hourly": GOLD_WEATHER_FORECAST_HOURLY_COLUMNS,
     "gold_forecast_hourly": GOLD_FORECAST_HOURLY_COLUMNS,
     "gold_forecast_accuracy": GOLD_FORECAST_ACCURACY_COLUMNS,
+    "gold_dq_anomalies": GOLD_DQ_ANOMALIES_COLUMNS,
+    "gold_dq_daily_summary": GOLD_DQ_DAILY_SUMMARY_COLUMNS,
 }
 
 GOLD_TABLE_COMMENTS: dict[str, str] = {
@@ -379,6 +445,17 @@ GOLD_TABLE_COMMENTS: dict[str, str] = {
         "Accuracy of the day-ahead forecasts against gold_energy_hourly actuals, per target and "
         "issue_date: MAE/MAPE of the model and of the seasonal naive baseline (same hour one "
         "week earlier) for the same hours. Rebuilt after every scoring run."
+    ),
+    "gold_dq_anomalies": (
+        "Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-scores "
+        "per SMARD series, an IsolationForest over the hourly gold features, completeness per "
+        "series and local day, physics rules and forecast drift. One row per check_name, entity "
+        "and ts_utc; a re-detection updates the row."
+    ),
+    "gold_dq_daily_summary": (
+        f"Daily anomaly counts per check and severity from the detect_anomalies run of each local "
+        f"({LOCAL_TZ}) day; checks that found nothing have n = 0. One row per detection_date, "
+        "check_name and severity."
     ),
 }
 
