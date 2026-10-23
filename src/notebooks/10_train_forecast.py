@@ -12,14 +12,6 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q -r forecast_requirements.txt
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
-
-# COMMAND ----------
-
 import logging
 import os
 import sys
@@ -159,6 +151,7 @@ with mlflow.start_run(run_name=f"{target} {test['issue_date'].max()}") as run:
         }
     )
     mlflow.log_metrics(metrics)
+    mlflow.set_tags(forecast.runtime_version_tags())  # 11_score_forecast compares these
     mlflow.log_figure(forecast_plot(), "forecast_vs_actual.png")
     mlflow.log_figure(importance_plot(), "permutation_importance.png")
     mlflow.log_table(importance_df, "permutation_importance.json")

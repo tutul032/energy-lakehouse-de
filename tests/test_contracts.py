@@ -271,6 +271,19 @@ def test_quality_sql_where_substitutes_table():
     )
 
 
+def test_quality_sql_latest_issue_complete():
+    contract = BY_TABLE["gold_forecast_hourly"]
+    rule = next(r for r in contract.quality if r.name == "latest_issue_complete")
+    sql = contracts.quality_sql(contract, rule, "workspace", "energy_prod")
+    fqn = "`workspace`.`energy_prod`.`gold_forecast_hourly`"
+    latest = f"(SELECT max(issue_date) FROM {fqn})"
+    assert sql == (
+        "SELECT count(*) AS total_rows, count_if(NOT coalesce((target IN (SELECT target FROM "
+        f"{fqn} WHERE issue_date = {latest} GROUP BY target HAVING count(*) BETWEEN 23 AND 25)), "
+        f"FALSE)) AS violations FROM {fqn} WHERE (issue_date = {latest})"
+    )
+
+
 def test_set_tags_sql_subset_and_empty():
     sql = contracts.set_tags_sql(HOURLY, "c", "s", {"layer": "gold"})
     assert sql == "ALTER MATERIALIZED VIEW `c`.`s`.`gold_energy_hourly` SET TAGS ('layer' = 'gold')"

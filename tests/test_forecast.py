@@ -224,6 +224,57 @@ def test_model_name():
         forecast.model_name("workspace", "energy_dev", "solar_mwh")
 
 
+def test_runtime_version_tags():
+    tags = forecast.runtime_version_tags()
+    assert set(tags) == {forecast.PYTHON_VERSION_TAG, *forecast.VERSION_TAGS.values()}
+    assert tags["numpy_version"] == np.__version__
+    assert tags["python_version"].startswith("3.")
+
+
+def test_major_minor():
+    assert forecast.major_minor("1.26.4") == "1.26"
+    assert forecast.major_minor("2.0") == "2.0"
+    assert forecast.major_minor("1.9.1rc1") == "1.9"
+
+
+def test_version_mismatches():
+    current = {"numpy_version": "2.1.3", "sklearn_version": "1.9.1"}
+    assert (
+        forecast.version_mismatches({"numpy_version": "2.1.0", "sklearn_version": "1.9.0"}, current)
+        == []
+    )
+    messages = forecast.version_mismatches(
+        {"numpy_version": "1.26.4", "sklearn_version": "1.9.1"}, current
+    )
+    assert messages == ["numpy: trained with 1.26.4, scoring 2.1.3"]
+    assert forecast.version_mismatches({}, current) == [
+        "numpy: training version not recorded (scoring 2.1.3)",
+        "scikit-learn: training version not recorded (scoring 1.9.1)",
+    ]
+
+
+def test_issue_counts_sql_snapshot():
+    assert forecast.issue_counts_sql("`c`.`s`.`gold_forecast_hourly`", date(2026, 10, 25)) == (
+        "SELECT target, count(*) AS n_rows FROM `c`.`s`.`gold_forecast_hourly` "
+        "WHERE issue_date = DATE '2026-10-25' GROUP BY target"
+    )
+
+
+def test_scoring_problems():
+    complete = {"total_load_mwh": 24, "price_eur_mwh": 23}
+    assert forecast.scoring_problems(complete, {}) == []
+    assert forecast.scoring_problems({"total_load_mwh": 25}, {}) == [
+        "price_eur_mwh: 0 rows (expected at least 23)"
+    ]
+    assert forecast.scoring_problems({"total_load_mwh": 22, "price_eur_mwh": 24}, {}) == [
+        "total_load_mwh: 22 rows (expected at least 23)"
+    ]
+    issues = {"price_eur_mwh": "skipped: no champion"}
+    assert forecast.scoring_problems({"total_load_mwh": 24}, issues) == [
+        "price_eur_mwh: skipped: no champion"
+    ]
+
+
 def test_create_table_sql_enables_timestamp_ntz():
     sql = forecast.create_table_sql(
         "`c`.`s`.`gold_forecast_hourly`", transforms.GOLD_FORECAST_HOURLY_COLUMNS, "It's a test."

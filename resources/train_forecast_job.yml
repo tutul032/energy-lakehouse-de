@@ -4,8 +4,8 @@
 # if the new version beats the seasonal naive baseline (see src/notebooks/10_train_forecast.py).
 # Schedule: Mondays 06:37 UTC (after the 05:17 daily refresh); development mode pauses it in dev.
 # No cluster definition: tasks run on serverless compute. Libraries (scikit-learn, mlflow,
-# holidays, pandas) are installed by the notebook from src/notebooks/forecast_requirements.txt:
-# job-level `environments` only apply to non-notebook (python script/wheel) tasks.
+# holidays) come from the serverless environment `forecast` only (no %pip in the notebooks); the
+# daily job's score_forecast uses the same pins. pandas/numpy are provided by the runtime.
 resources:
   jobs:
     train_forecast_job:
@@ -24,8 +24,19 @@ resources:
       email_notifications:
         on_failure:
           - ${var.alert_email}
+      environments:
+        - environment_key: forecast
+          spec:
+            environment_version: "2"
+            dependencies:
+              - holidays==0.107
+              - scikit-learn==1.9.1
+              - mlflow==3.17.2
+              - pydantic>=2.7
+              - pyyaml>=6
       tasks:
         - task_key: train_load
+          environment_key: forecast
           notebook_task:
             notebook_path: ../src/notebooks/10_train_forecast.py
             base_parameters:
@@ -33,6 +44,7 @@ resources:
               schema: "{{job.parameters.schema}}"
               target: total_load_mwh
         - task_key: train_price
+          environment_key: forecast
           notebook_task:
             notebook_path: ../src/notebooks/10_train_forecast.py
             base_parameters:

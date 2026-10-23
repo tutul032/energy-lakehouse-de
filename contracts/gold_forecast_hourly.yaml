@@ -7,7 +7,7 @@
 apiVersion: v1
 kind: DataContract
 id: energy.gold_forecast_hourly
-version: 0.1.0
+version: 0.1.1
 status: draft
 owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
 description: "Day-ahead forecasts of total_load_mwh and price_eur_mwh: issued daily around 05:17 UTC on local day D for every hour of the Europe/Berlin day D+1, using only data available at issue time (champion model per target). One row per target_hour_utc, target and issue_date."
@@ -33,3 +33,6 @@ quality:
   - {name: covers_next_local_day, type: row_condition, sql: "to_date(target_hour_local) = date_add(issue_date, 1)", max_violation_pct: 0}
   - {name: load_plausible, type: row_condition, sql: "target <> 'total_load_mwh' OR forecast BETWEEN 20000 AND 100000", max_violation_pct: 0}
   - {name: price_plausible, type: row_condition, sql: "target <> 'price_eur_mwh' OR forecast BETWEEN -500 AND 4000", max_violation_pct: 0}
+  # Latest issue is complete: on the newest issue_date every target present has 23-25 rows (one
+  # per hour of the local day D+1); older issue dates are not checked.
+  - {name: latest_issue_complete, type: row_condition, where: "issue_date = (SELECT max(issue_date) FROM {table})", sql: "target IN (SELECT target FROM {table} WHERE issue_date = (SELECT max(issue_date) FROM {table}) GROUP BY target HAVING count(*) BETWEEN 23 AND 25)", max_violation_pct: 0}

@@ -6,7 +6,7 @@ Day-ahead forecasts of total_load_mwh and price_eur_mwh: issued daily around 05:
 
 | | |
 |---|---|
-| Contract | `energy.gold_forecast_hourly` v0.1.0 (draft) |
+| Contract | `energy.gold_forecast_hourly` v0.1.1 (draft) |
 | Owner | Rezaul Tutul (rezaul.tutul@yahoo.com) |
 | Table (prod) | `workspace.energy_prod.gold_forecast_hourly` |
 | Grain | one row per target_hour_utc, target and issue_date |
@@ -14,7 +14,7 @@ Day-ahead forecasts of total_load_mwh and price_eur_mwh: issued daily around 05:
 | Freshness SLA | newest `issue_time_utc` at most 36 h old |
 | Refresh | daily ~05:17 UTC (score_forecast task) |
 | Consumers | `energy-consumers` (SELECT) |
-| Tags | `contract_id=energy.gold_forecast_hourly`, `contract_version=0.1.0`, `data_product=energy_forecast_hourly`, `domain=energy`, `layer=gold`, `license=CC-BY-4.0`, `source=smard+open-meteo` |
+| Tags | `contract_id=energy.gold_forecast_hourly`, `contract_version=0.1.1`, `data_product=energy_forecast_hourly`, `domain=energy`, `layer=gold`, `license=CC-BY-4.0`, `source=smard+open-meteo` |
 
 ## Columns
 
@@ -42,6 +42,7 @@ Checked after every refresh by `05_verify_contracts` (task `verify_contracts` of
 | `covers_next_local_day` | `to_date(target_hour_local) = date_add(issue_date, 1)` | 0% |
 | `load_plausible` | `target <> 'total_load_mwh' OR forecast BETWEEN 20000 AND 100000` | 0% |
 | `price_plausible` | `target <> 'price_eur_mwh' OR forecast BETWEEN -500 AND 4000` | 0% |
+| `latest_issue_complete` | `target IN (SELECT target FROM {table} WHERE issue_date = (SELECT max(issue_date) FROM {table}) GROUP BY target HAVING count(*) BETWEEN 23 AND 25)` (only rows where `issue_date = (SELECT max(issue_date) FROM {table})`) | 0% |
 
 ## Request access
 

@@ -14,8 +14,10 @@ The notebooks (``10_train_forecast``, ``11_score_forecast``, ``12_forecast_accur
 Spark tables into pandas, call these functions and run the rendered SQL.
 """
 
-from collections.abc import Iterable, Sequence
+import platform
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, time, timedelta
+from importlib import metadata
 
 import holidays
 import numpy as np
@@ -62,7 +64,12 @@ MODEL_PARAMS: dict[str, object] = {
     "random_state": 42,
 }
 CHAMPION_ALIAS = "champion"
+MIN_FORECAST_HOURS = 23  # a local day has 23, 24 or 25 hours
 STAGING_VIEW = "forecast_updates"
+# MLflow run tags with the library versions used for training; the pickled model only loads
+# reliably where numpy and scikit-learn match (major.minor) at scoring time.
+PYTHON_VERSION_TAG = "python_version"
+VERSION_TAGS: dict[str, str] = {"numpy": "numpy_version", "scikit-learn": "sklearn_version"}
 
 _HOUR = pd.Timedelta(hours=1)
 
@@ -343,6 +350,34 @@ def model_name(catalog: str, schema: str, target: str) -> str:
     return f"{catalog}.{schema}.forecaster_{target}"
 
 
+def runtime_version_tags() -> dict[str, str]:
+    """Python, numpy and scikit-learn versions of the current environment, keyed by tag name."""
+    tags = {PYTHON_VERSION_TAG: platform.python_version()}
+    tags.update({tag: metadata.version(package) for package, tag in VERSION_TAGS.items()})
+    return tags
+
+
+def major_minor(version: str) -> str:
+    """``"1.26.4"`` -> ``"1.26"``."""
+    return ".".join(version.split(".")[:2])
+
+
+def version_mismatches(trained: Mapping[str, str], current: Mapping[str, str]) -> list[str]:
+    """Messages for numpy/scikit-learn whose major.minor differ between training and scoring.
+
+    A tag missing from the training run (models trained before the tags existed) is reported too,
+    since compatibility is then unknown.
+    """
+    messages = []
+    for package, tag in VERSION_TAGS.items():
+        trained_version, current_version = trained.get(tag), current.get(tag)
+        if not trained_version:
+            messages.append(f"{package}: training version not recorded (scoring {current_version})")
+        elif major_minor(trained_version) != major_minor(current_version or ""):
+            messages.append(f"{package}: trained with {trained_version}, scoring {current_version}")
+    return messages
+
+
 def forecast_rows(
     features: pd.DataFrame, predictions, target: str, model_version: str
 ) -> pd.DataFrame:
@@ -382,6 +417,24 @@ def merge_forecast_sql(fqn: str, source: str = STAGING_VIEW) -> str:
         "AND t.issue_date = s.issue_date "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
     )
+
+
+def issue_counts_sql(fqn: str, day: date) -> str:
+    """Rows per target for issue_date ``day`` (``target, n_rows``)."""
+    return (
+        f"SELECT target, count(*) AS n_rows FROM {fqn} "
+        f"WHERE issue_date = DATE '{day.isoformat()}' GROUP BY target"
+    )
+
+
+def scoring_problems(counts: Mapping[str, int], issues: Mapping[str, str]) -> list[str]:
+    """Why a scoring run must fail: targets with an issue, or fewer than 23 rows for the day."""
+    problems = [f"{target}: {reason}" for target, reason in issues.items()]
+    for target in TARGETS:
+        n_rows = counts.get(target, 0)
+        if target not in issues and n_rows < MIN_FORECAST_HOURS:
+            problems.append(f"{target}: {n_rows} rows (expected at least {MIN_FORECAST_HOURS})")
+    return problems
 
 
 def _mape_sql(pred: str) -> str:
