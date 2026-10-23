@@ -2,7 +2,7 @@
 # contracts (contracts/*.yaml): apply comments/tags/grants, verify schema/quality/freshness;
 # then the day-ahead forecast (score_forecast) and its accuracy (forecast_accuracy); finally
 # ML-assisted data quality (detect_anomalies -> gold_dq_anomalies / gold_dq_daily_summary) and an
-# optional LLM summary of it (dq_summary_llm, skipped while dq_llm_endpoint is empty).
+# optional LLM summary of it (dq_summary_llm via ai_query; skipped if dq_llm_endpoint is empty).
 # No schedule: GitHub Actions (.github/workflows/daily-refresh.yml) uploads fresh landing files
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
 # principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
@@ -12,6 +12,11 @@ resources:
   jobs:
     daily_refresh_job:
       name: daily_refresh_job
+      # One run at a time; an overlapping trigger (e.g. a manual run during the daily one) waits
+      # in the queue instead of failing.
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
       parameters:
         - name: catalog
           default: ${var.catalog}
@@ -21,9 +26,9 @@ resources:
         # others). Override per run: --params inject_test_anomaly=true
         - name: inject_test_anomaly
           default: "false"
-        # Model serving endpoint for ai_query (e.g. a Foundation Model API endpoint); empty = skip.
+        # Model serving endpoint for ai_query (Foundation Model API, all targets); empty = skip.
         - name: dq_llm_endpoint
-          default: ""
+          default: "databricks-gpt-oss-120b"
       email_notifications:
         on_failure:
           - ${var.alert_email}
@@ -95,10 +100,13 @@ resources:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
         # Anomaly detection needs scikit-learn (IsolationForest): same environment as forecasting.
+        # No retries: a failure is a deliberate signal (critical anomaly or empty input), not a
+        # transient error; a retry would only repeat the same result.
         - task_key: detect_anomalies
           depends_on:
             - task_key: forecast_accuracy
           environment_key: forecast
+          max_retries: 0
           notebook_task:
             notebook_path: ../src/notebooks/20_detect_anomalies.py
             base_parameters:

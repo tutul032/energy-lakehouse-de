@@ -37,7 +37,7 @@ def assert_columns(df: pd.DataFrame):
 # --- (a) seasonal robust z ----------------------------------------------------------------------
 
 
-def test_seasonal_z_flags_clear_spike_critical():
+def test_seasonal_z_flags_clear_spike_as_warning_only():
     df = weekly_series()
     last = df.index[-1]
     df.loc[last, "value"] *= 3
@@ -45,39 +45,71 @@ def test_seasonal_z_flags_clear_spike_critical():
     assert_columns(rows)
     assert len(rows) == 1
     row = rows.iloc[0]
-    assert row["severity"] == an.CRITICAL
+    assert row["severity"] == an.WARNING  # never critical, however large
     assert row["entity"] == "total_load"
     assert row["ts_utc"] == df.loc[last, "ts_utc"]
     assert row["lower"] < row["expected"] < row["upper"] < row["value"]
     assert "robust z +" in row["reason"]
 
 
-def test_seasonal_z_moderate_deviation_is_warning():
+def test_seasonal_z_never_critical():
+    assert an.CHECK_SEVERITIES[an.SEASONAL_Z] == (an.WARNING,)
     df = weekly_series()
+    df.loc[df.index[-24:], "value"] *= 10
+    rows = an.seasonal_robust_z(df, "value", score_from=score_from(df))
+    assert len(rows) == 24
+    assert set(rows["severity"]) == {an.WARNING}
+
+
+def test_seasonal_z_needs_both_z_and_relative_deviation():
+    df = weekly_series(level=0.001)  # tiny week-to-week variation: the 5 % MAD floor applies
     last = df.index[-1]
     history = df["value"].to_numpy()[last - 168 * 8 : last : 168]
     median = np.median(history)
-    mad = np.median(np.abs(history - median))
-    df.loc[last, "value"] = median + 6 * mad / an.MAD_TO_Z  # z = 6: warning, not critical
+    df.loc[last, "value"] = median * 1.20  # z = 0.6745 * 0.20 / 0.05 = 2.7, only +20 %
+    assert an.seasonal_robust_z(df, "value", score_from=score_from(df)).empty
+    # z passes a lowered warn_z, but +20 % is below the 25 % relative gate: still not flagged.
+    assert an.seasonal_robust_z(df, "value", warn_z=2, score_from=score_from(df)).empty
+    df.loc[last, "value"] = median * 1.30  # z = 4.05 and +30 %: flagged
     rows = an.seasonal_robust_z(df, "value", score_from=score_from(df))
     assert list(rows["severity"]) == [an.WARNING]
-    assert rows.iloc[0]["score"] == pytest.approx(6.0)
+    assert "+30%" in rows.iloc[0]["reason"]
 
 
-def test_seasonal_z_normal_weekly_pattern_gives_no_rows():
-    df = pd.concat(
-        [weekly_series(), weekly_series("solar", level=0.05, phase=1.0)], ignore_index=True
+def test_seasonal_z_gradual_level_shift_at_most_warnings():
+    # Late-autumn style trend: the level falls 5 % per week over 9 weeks (e.g. less midday solar
+    # -> more gas elsewhere); the scored week deviates strongly from the 8-week median.
+    df = weekly_series(level=0.0)
+    week = np.arange(len(df)) // 168
+    shifted = pd.concat(
+        [
+            df.assign(value=df["value"] * (1 - 0.05 * week)),
+            df.assign(entity="natural_gas", value=df["value"] * 0.2 * (1 + 0.08 * week)),
+        ],
+        ignore_index=True,
     )
-    rows = an.seasonal_robust_z(df, "value", score_from=score_from(df))
-    assert rows.empty
-    assert tuple(rows.columns) == an.ANOMALY_COLUMNS
+    rows = an.seasonal_robust_z(shifted, "value", score_from=score_from(df))
+    assert set(rows["severity"]) <= {an.WARNING}
+    assert an.critical_failures(rows) == []
 
 
-def test_seasonal_z_skips_mad_zero():
+def test_seasonal_z_near_constant_history_small_change_not_flagged():
     df = weekly_series()
-    df["value"] = 1000.0  # constant history: MAD == 0
-    df.loc[df.index[-1], "value"] = 99999.0
+    df["value"] = 1000.0  # constant history: raw MAD == 0, floored at max(50, 5 % of 1000)
+    df.loc[df.index[-1], "value"] = 1100.0  # +10 %: z = 0.6745 * 100 / 50 = 1.3
     assert an.seasonal_robust_z(df, "value", score_from=score_from(df)).empty
+    df["value"] = 0.0  # all-zero history (e.g. solar at night): floor 50 MWh
+    df.loc[df.index[-1], "value"] = 80.0  # z = 1.1
+    assert an.seasonal_robust_z(df, "value", score_from=score_from(df)).empty
+
+
+def test_seasonal_z_constant_history_large_change_is_warning():
+    df = weekly_series()
+    df["value"] = 1000.0
+    df.loc[df.index[-1], "value"] = 2000.0  # z = 0.6745 * 1000 / 50 = 13.5, +100 %
+    rows = an.seasonal_robust_z(df, "value", score_from=score_from(df))
+    assert list(rows["severity"]) == [an.WARNING]
+    assert rows.iloc[0]["score"] == pytest.approx(an.MAD_TO_Z * 1000 / 50)
 
 
 def test_seasonal_z_skips_short_history():
@@ -94,8 +126,9 @@ def test_seasonal_z_excludes_current_point_from_history():
     assert rows.iloc[0]["expected"] < 80000
 
 
-def test_inject_test_anomaly_marks_copy_and_is_flagged():
-    df = weekly_series()
+@pytest.mark.parametrize("level", [0.0, 0.02, 0.08])  # flat to noisy week-to-week levels
+def test_inject_test_anomaly_marks_copy_and_is_flagged(level):
+    df = weekly_series(level=level)
     injected = an.inject_test_anomaly(df, NOW)
     assert (injected["entity"] == "total_load").sum() == len(df)
     test = injected[injected["entity"] == "TEST:total_load"]
@@ -105,8 +138,11 @@ def test_inject_test_anomaly_marks_copy_and_is_flagged():
     assert test.loc[test["ts_utc"] == latest, "value"].iloc[0] == pytest.approx(original * 0.5)
     rows = an.seasonal_robust_z(injected, "value", score_from=score_from(df))
     assert list(rows["entity"]) == ["TEST:total_load"]
-    assert list(rows["severity"]) == [an.CRITICAL]
+    assert list(rows["ts_utc"]) == [latest]
+    assert list(rows["severity"]) == [an.WARNING]  # seasonal_robust_z is warning-only
     assert an.critical_failures(rows) == []
+    # Even a critical TEST: row never fails the run.
+    assert an.critical_failures(rows.assign(severity=an.CRITICAL)) == []
 
 
 def test_inject_test_anomaly_uses_complete_hour_only():
@@ -280,6 +316,13 @@ def test_completeness_thresholds(missing, severity):
         assert rows.iloc[0]["score"] == pytest.approx(100 * missing / 24)
 
 
+def test_completeness_missing_hours_day_still_critical():
+    day = date(2026, 10, 19)
+    rows = an.completeness(day_frame("total_load", day, drop=6), today=date(2026, 10, 20), days=1)
+    assert list(rows["severity"]) == [an.CRITICAL]  # 6 of 24 hours = 25 % > 20 %
+    assert an.critical_failures(rows)
+
+
 def test_completeness_null_values_and_absent_series_count_as_missing():
     day = date(2026, 10, 19)
     df = day_frame("solar", day)
@@ -314,6 +357,7 @@ def test_solar_at_night_is_critical():
     rows = an.physics_rules(physics_frame([500.0, 0.0, 0.0], [0.0, 0.0, 0.0]))
     assert_columns(rows)
     assert list(rows["severity"]) == [an.CRITICAL]
+    assert an.critical_failures(rows)
     assert rows.iloc[0]["ts_utc"] == pd.Timestamp("2026-10-19 00:00", tz="UTC")
     assert rows.iloc[0]["reason"].startswith("solar output at night")
 
@@ -391,7 +435,7 @@ def sample_rows() -> pd.DataFrame:
             an._frame(
                 [
                     {
-                        "check_name": an.SEASONAL_Z,
+                        "check_name": an.COMPLETENESS,
                         "entity": "TEST:total_load",
                         "ts_utc": ts,
                         "value": 1.0,
@@ -434,8 +478,9 @@ def test_summary_rows_lists_every_check_with_zero_counts():
     pairs = {(r.check_name, r.severity): r.n for r in summary.itertuples()}
     assert len(pairs) == sum(len(s) for s in an.CHECK_SEVERITIES.values())
     assert pairs[(an.SOLAR_AT_NIGHT, an.CRITICAL)] == 1
-    assert pairs[(an.SEASONAL_Z, an.CRITICAL)] == 1
+    assert pairs[(an.COMPLETENESS, an.CRITICAL)] == 1
     assert pairs[(an.SEASONAL_Z, an.WARNING)] == 1
+    assert (an.SEASONAL_Z, an.CRITICAL) not in pairs
     assert pairs[(an.ISOLATION_FOREST, an.WARNING)] == 0
     assert set(summary["detection_date"]) == {date(2026, 10, 20)}
     assert an.summary_rows(an.empty_anomalies(), date(2026, 10, 20))["n"].sum() == 0
@@ -501,3 +546,23 @@ def test_llm_prompt_contains_counts_and_top_anomalies():
     assert "- completeness / warning: 2" in prompt
     assert "- [warning] completeness solar at 2026-10-18 22:00:00 UTC: 2 of 24 hours" in prompt
     assert an.llm_prompt(date(2026, 10, 20), [], []).count("- none") == 2
+    assert "data engineer in 3-5 plain-language sentences" in prompt
+    assert "'warning' means unusual but possibly real" in prompt
+    assert "'critical' means a likely data error" in prompt
+
+
+def test_llm_prompt_stays_short_with_top_10():
+    summary = an.summary_rows(an.empty_anomalies(), date(2026, 10, 20)).to_dict("records")
+    top = [
+        {
+            "check_name": an.ISOLATION_FOREST,
+            "entity": an.IF_ENTITY,
+            "ts_utc": f"2026-10-19 {h:02d}:00:00",
+            "severity": an.WARNING,
+            "reason": "unusual combination: solar_mwh z=+12.3, price_eur_mwh z=-4.1, "
+            "shortwave_radiation_solar_avg_wm2 z=-1.0",
+        }
+        for h in range(an.TOP_ANOMALIES)
+    ]
+    # All 9 check/severity counts + 10 long reasons: ~2.6k chars (~650 tokens).
+    assert len(an.llm_prompt(date(2026, 10, 20), summary, top)) < 3000

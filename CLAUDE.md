@@ -236,7 +236,10 @@ builds its own tables in its own schema.
   - `seasonal_robust_z` on `silver_energy_long` (entity = series name, `day_ahead_price`
     excluded: negative/spiky prices are often real): per entity and local hour-of-week, median
     and MAD of the previous 8 weeks (current point excluded), z = 0.6745·(x − median)/MAD;
-    skipped if MAD = 0 or < 5 history points; |z| ≥ 4 warning, ≥ 8 critical.
+    skipped if < 5 history points; MAD floored at max(MAD, 5 % of |median|, 50 MWh); flagged
+    only if |z| ≥ 4 **and** |x − median| ≥ 25 % of |median|. **Warning only** (seasonal effects
+    such as less autumn solar → more gas are often real); critical is reserved for completeness,
+    physics rules and forecast MAPE drift.
   - `multivariate_isolation_forest` on `gold_energy_weather_hourly` (load, price, solar, wind
     on/off, lignite, gas, on/offshore wind speed, radiation, local-hour sin/cos), contamination
     0.005, random_state 42; warning only. Trained on the last 365 days **including** the scored
@@ -261,8 +264,10 @@ builds its own tables in its own schema.
     Job parameter `inject_test_anomaly` (default `"false"`; the notebook refuses schemas not
     ending in `_dev`) adds `TEST:total_load`, a copy of total_load with the most recent complete
     hour × 0.5. → `dq_summary_llm` (`21_dq_summary_llm.py`, `run_if: ALL_DONE`): job parameter
-    `dq_llm_endpoint` (default empty = skip); otherwise `ai_query(endpoint, prompt)` from today's
-    summary + top 10 anomalies → `gold_dq_daily_summary_text` (no contract); any error is a
+    `dq_llm_endpoint` (default `databricks-gpt-oss-120b`, all targets; empty = skip):
+    `ai_query(endpoint, prompt)` with a short prompt (counts + top 10 anomalies, 3–5 sentences for
+    a data engineer; warning = unusual but possibly real, critical = likely data error) →
+    `gold_dq_daily_summary_text` (model, prompt, prompt_chars; no contract); any error is a
     warning, never a failure.
 - **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
   federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with

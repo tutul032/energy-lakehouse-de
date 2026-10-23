@@ -2,10 +2,12 @@
 # MAGIC %md
 # MAGIC # 21_dq_summary_llm
 # MAGIC Optional LLM summary of the day's data quality (task `dq_summary_llm` of
-# MAGIC `daily_refresh_job`). With an empty `endpoint` (default) it only prints that it skipped.
+# MAGIC `daily_refresh_job`; endpoint from job parameter `dq_llm_endpoint`, default
+# MAGIC `databricks-gpt-oss-120b`). With an empty `endpoint` it only prints that it skipped.
 # MAGIC Otherwise it builds a short prompt from today's (Europe/Berlin) `gold_dq_daily_summary`
 # MAGIC and the top 10 anomalies detected today, calls `ai_query(endpoint, prompt)` via SQL and
-# MAGIC stores the text in `gold_dq_daily_summary_text` (one row per day, replaced on re-runs).
+# MAGIC stores the text with the model name and prompt length in `gold_dq_daily_summary_text`
+# MAGIC (one row per day, replaced on re-runs).
 # MAGIC Never fails the job: any error is logged as a warning.
 
 # COMMAND ----------
@@ -72,8 +74,9 @@ else:
         row = pd.DataFrame(
             {
                 "detection_date": [today],
-                "endpoint": [endpoint],
+                "model": [endpoint],
                 "prompt": [prompt],
+                "prompt_chars": [len(prompt)],
                 "summary_text": [text.strip()],
                 "generated_at": [pd.Timestamp.now(tz="UTC").tz_localize(None)],
             }

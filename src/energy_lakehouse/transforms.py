@@ -392,8 +392,9 @@ GOLD_DQ_DAILY_SUMMARY_COLUMNS: list[tuple[str, str, str]] = [
 # Optional LLM summary of the day's anomalies (21_dq_summary_llm); no data contract.
 GOLD_DQ_DAILY_SUMMARY_TEXT_COLUMNS: list[tuple[str, str, str]] = [
     ("detection_date", "DATE", f"Local ({LOCAL_TZ}) day of the detection run."),
-    ("endpoint", "STRING", "Model serving endpoint called with ai_query."),
-    ("prompt", "STRING", "Prompt sent to the endpoint."),
+    ("model", "STRING", "Model (serving endpoint name) called with ai_query."),
+    ("prompt", "STRING", "Prompt sent to the model."),
+    ("prompt_chars", "BIGINT", "Length of the prompt in characters."),
     ("summary_text", "STRING", "Generated summary of the day's data-quality anomalies."),
     ("generated_at", "TIMESTAMP", "When the summary was generated (UTC)."),
 ]

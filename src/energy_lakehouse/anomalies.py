@@ -42,7 +42,9 @@ DRIFT_MAPE = "forecast_drift_mape"
 
 # Severities each check can emit; the daily summary has one row per pair (n = 0 if none found).
 CHECK_SEVERITIES: dict[str, tuple[str, ...]] = {
-    SEASONAL_Z: (CRITICAL, WARNING),
+    # Seasonal deviations are often real (late autumn: less solar -> more gas): warnings only.
+    # Critical is reserved for completeness, physics rules and forecast MAPE drift.
+    SEASONAL_Z: (WARNING,),
     ISOLATION_FOREST: (WARNING,),
     COMPLETENESS: (CRITICAL, WARNING),
     SOLAR_AT_NIGHT: (CRITICAL,),
@@ -57,7 +59,11 @@ MAD_TO_Z = 0.6745
 SEASONAL_WINDOW_WEEKS = 8
 SEASONAL_MIN_HISTORY = 5
 SEASONAL_WARN_Z = 4.0
-SEASONAL_CRIT_Z = 8.0
+# MAD floor: max(MAD, 5 % of |median|, 50 MWh), so near-constant histories do not inflate z.
+SEASONAL_MAD_FLOOR_REL = 0.05
+SEASONAL_MAD_FLOOR_ABS = 50.0
+# Also required: |x - median| >= 25 % of |median| (relative deviation matters to humans).
+SEASONAL_MIN_REL_DEVIATION = 0.25
 # Negative or spiky prices are often real: prices are checked by the isolation forest only.
 SEASONAL_EXCLUDED_SERIES: tuple[str, ...] = ("day_ahead_price",)
 
@@ -159,17 +165,21 @@ def seasonal_robust_z(
     by: Sequence[str] = ("entity",),
     window_weeks: int = SEASONAL_WINDOW_WEEKS,
     warn_z: float = SEASONAL_WARN_Z,
-    crit_z: float = SEASONAL_CRIT_Z,
     score_from=None,
     min_history: int = SEASONAL_MIN_HISTORY,
+    mad_floor_rel: float = SEASONAL_MAD_FLOOR_REL,
+    mad_floor_abs: float = SEASONAL_MAD_FLOOR_ABS,
+    min_rel_deviation: float = SEASONAL_MIN_REL_DEVIATION,
 ) -> pd.DataFrame:
     """Robust z-score of each point vs the same local hour-of-week in the previous weeks.
 
     ``df`` has ``by`` columns, ``ts_utc`` and ``value_col``. For every point at or after
     ``score_from`` (default: all), the history is the same entity and local (Europe/Berlin)
     hour-of-week within ``window_weeks`` before it (the point itself excluded). Points with fewer
-    than ``min_history`` history values or MAD == 0 are skipped. ``|z| >= warn_z`` is a warning,
-    ``|z| >= crit_z`` critical; ``lower``/``upper`` is the median +- the warning distance.
+    than ``min_history`` history values are skipped. The MAD is floored at
+    ``max(MAD, mad_floor_rel * |median|, mad_floor_abs)``. A point is flagged (always as a
+    warning) only if ``|z| >= warn_z`` and ``|x - median| >= min_rel_deviation * |median|``;
+    ``lower``/``upper`` is the median +- the larger of both distances.
     """
     by = list(by)
     data = df.loc[df[value_col].notna(), [*by, "ts_utc", value_col]].copy()
@@ -194,12 +204,11 @@ def seasonal_robust_z(
                 continue
             median = float(np.median(history))
             mad = float(np.median(np.abs(history - median)))
-            if mad == 0:
-                continue
+            mad = max(mad, mad_floor_rel * abs(median), mad_floor_abs)
             z = MAD_TO_Z * (x - median) / mad
-            if abs(z) < warn_z:
+            if abs(z) < warn_z or abs(x - median) < min_rel_deviation * abs(median):
                 continue
-            half_range = warn_z * mad / MAD_TO_Z
+            half_range = max(warn_z * mad / MAD_TO_Z, min_rel_deviation * abs(median))
             records.append(
                 {
                     "check_name": SEASONAL_Z,
@@ -210,9 +219,12 @@ def seasonal_robust_z(
                     "lower": median - half_range,
                     "upper": median + half_range,
                     "score": abs(z),
-                    "severity": CRITICAL if abs(z) >= crit_z else WARNING,
+                    "severity": WARNING,
                     "reason": (
-                        f"robust z {z:+.1f} vs same hour-of-week median {median:.6g} "
+                        f"robust z {z:+.1f} ({100 * (x - median) / abs(median):+.0f}%) vs same "
+                        f"hour-of-week median {median:.6g} ({len(history)} weeks)"
+                        if median
+                        else f"robust z {z:+.1f} vs same hour-of-week median 0 "
                         f"({len(history)} weeks)"
                     ),
                 }
@@ -623,7 +635,7 @@ def top_anomalies_sql(fqn: str, day: date, limit: int = TOP_ANOMALIES) -> str:
 
 
 def llm_prompt(day: date, summary: Iterable[Mapping], top: Iterable[Mapping]) -> str:
-    """Short prompt: the day's counts per check/severity and the top anomalies."""
+    """Short prompt: the day's counts per check/severity and the top anomalies (pass <= 10)."""
     counts = [f"- {r['check_name']} / {r['severity']}: {r['n']}" for r in summary]
     lines = [
         f"- [{r['severity']}] {r['check_name']} {r['entity']} at {r['ts_utc']} UTC: {r['reason']}"
@@ -631,11 +643,12 @@ def llm_prompt(day: date, summary: Iterable[Mapping], top: Iterable[Mapping]) ->
     ]
     return "\n".join(
         [
-            "You are a data engineer. Summarize today's data-quality status of a German energy "
-            "lakehouse (SMARD load/generation/prices, Open-Meteo weather, day-ahead forecasts) "
-            "in at most 5 sentences for an operations channel. Name critical issues first and "
-            "suggest a likely cause or next step. Entities starting with TEST: are injected "
-            "test anomalies; mention them only as tests.",
+            "Summarize today's data-quality status of a German energy lakehouse (SMARD "
+            "load/generation/prices, Open-Meteo weather, day-ahead forecasts) for a data "
+            "engineer in 3-5 plain-language sentences. Severity 'warning' means unusual but "
+            "possibly real; 'critical' means a likely data error. Name critical issues first "
+            "and suggest a likely cause or next step. Entities starting with TEST: are "
+            "injected test anomalies; mention them only as tests.",
             f"Detection date (Europe/Berlin): {day.isoformat()}",
             "Counts per check and severity:",
             *(counts or ["- none"]),
