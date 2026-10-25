@@ -6,7 +6,8 @@ The pipeline code in ``src/pipelines/`` turns these into Spark expressions.
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from energy_lakehouse.smard_config import SERIES, SmardSeries
 from energy_lakehouse.weather_config import (
@@ -147,6 +148,17 @@ def parse_weather_landing_path(path: str) -> tuple[str, datetime, bool]:
     return location_id, datetime(run_date.year, run_date.month, run_date.day, tzinfo=UTC), False
 
 
+def expected_local_hours(day: date, tz: str = LOCAL_TZ) -> int:
+    """Hours in the local calendar day ``day``: 24, or 23/25 on DST change days.
+
+    Same rule as gold_energy_daily.expected_hours (local midnight to next local midnight, in UTC).
+    """
+    zone = ZoneInfo(tz)
+    start = datetime.combine(day, time(), zone).astimezone(UTC)
+    end = datetime.combine(day + timedelta(days=1), time(), zone).astimezone(UTC)
+    return int((end - start).total_seconds() // 3600)
+
+
 def agg_rule(unit: str) -> str:
     """Spark aggregate function name (``sum``/``avg``) for a series unit."""
     try:
@@ -281,6 +293,10 @@ GOLD_ENERGY_DAILY_COLUMNS: list[tuple[str, str, str]] = [
     ("price_max_eur_mwh", "DOUBLE", "Highest hourly day-ahead price (EUR/MWh)."),
     ("renewables_share_avg", "DOUBLE", "Average of the hourly renewables_share."),
     ("hour_count", "BIGINT", "Hours in the day: 24, or 23/25 on DST change days."),
+    ("load_hours", "BIGINT", "Hours with a published total_load_mwh (non-NULL)."),
+    ("price_hours", "BIGINT", "Hours with a published price_eur_mwh (non-NULL)."),
+    ("expected_hours", "INT", "Local hours in the day: 24, or 23/25 on DST change days."),
+    ("is_complete", "BOOLEAN", "True if load_hours and price_hours both equal expected_hours."),
 ]
 
 GOLD_ENERGY_WEATHER_HOURLY_COLUMNS: list[tuple[str, str, str]] = gold_weather_columns()

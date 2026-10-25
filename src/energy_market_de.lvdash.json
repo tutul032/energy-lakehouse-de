@@ -1,0 +1,1165 @@
+{
+  "datasets": [
+    {
+      "catalog": "workspace",
+      "displayName": "ds_daily_kpis",
+      "name": "0a3a71ba",
+      "queryLines": [
+        "SELECT date_local,\r\n",
+        "       round(total_load_mwh / 1000, 1)      AS load_gwh,\r\n",
+        "       round(price_avg_eur_mwh, 1)          AS avg_price,\r\n",
+        "       round(renewables_share_avg * 100, 1) AS renewables_pct\r\n",
+        "FROM gold_energy_daily\r\n",
+        "WHERE date_local = (SELECT max(date_local) FROM gold_energy_daily WHERE is_complete)"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_hourly_14d",
+      "name": "90e9a270",
+      "queryLines": [
+        "SELECT hour_local, total_load_mwh, price_eur_mwh, solar_mwh, wind_onshore_mwh, wind_offshore_mwh,\r\n",
+        "       lignite_mwh, hard_coal_mwh, natural_gas_mwh, renewables_share\r\n",
+        "FROM gold_energy_hourly\r\n",
+        "WHERE hour_utc >= current_timestamp() - INTERVAL 14 DAYS"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_merit_order",
+      "name": "6f1699f4",
+      "queryLines": [
+        "SELECT round(wind_speed_100m_onshore_avg_ms) AS wind_ms, round(avg(price_eur_mwh), 1) AS avg_price,\r\n",
+        "       round(avg(renewables_share), 2) AS ren_share, count(*) AS hours\r\n",
+        "FROM gold_energy_weather_hourly\r\n",
+        "WHERE wind_speed_100m_onshore_avg_ms IS NOT NULL AND hour(hour_local) BETWEEN 0 AND 5\r\n",
+        "GROUP BY 1 HAVING count(*) >= 20 ORDER BY 1"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_forecast_tomorrow",
+      "name": "44649444",
+      "queryLines": [
+        "WITH f AS (\r\n",
+        "  SELECT target_hour_local, target, forecast FROM gold_forecast_hourly\r\n",
+        "  WHERE issue_date = (SELECT max(issue_date) FROM gold_forecast_hourly)\r\n",
+        ")\r\n",
+        "SELECT f.target_hour_local, f.target, f.forecast,\r\n",
+        "       CASE f.target WHEN 'total_load_mwh' THEN h.total_load_mwh ELSE h.price_eur_mwh END AS same_hour_last_week\r\n",
+        "FROM f LEFT JOIN gold_energy_hourly h ON h.hour_local = f.target_hour_local - INTERVAL 7 DAYS"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_forecast_vs_actual",
+      "name": "17ae361a",
+      "queryLines": [
+        "SELECT f.target_hour_local, f.target, f.forecast,\r\n",
+        "       CASE f.target WHEN 'total_load_mwh' THEN h.total_load_mwh ELSE h.price_eur_mwh END AS actual\r\n",
+        "FROM gold_forecast_hourly f\r\n",
+        "JOIN gold_energy_hourly h ON h.hour_utc = f.target_hour_utc\r\n",
+        "WHERE f.issue_date >= date_sub(to_date(from_utc_timestamp(current_timestamp(), 'Europe/Berlin')), 14)"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_accuracy",
+      "name": "b0e99bee",
+      "queryLines": [
+        "SELECT issue_date, target, n_hours, round(mae, 1) AS mae, round(baseline_mae, 1) AS baseline_mae,\r\n",
+        "       round(mape, 2) AS mape, mae < baseline_mae AS model_better\r\n",
+        "FROM gold_forecast_accuracy ORDER BY issue_date DESC"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_dq_counts",
+      "name": "6639fbad",
+      "queryLines": [
+        "SELECT to_date(from_utc_timestamp(detected_at, 'Europe/Berlin')) AS day, severity, check_name, count(*) AS n\r\n",
+        "FROM gold_dq_anomalies WHERE entity NOT LIKE 'TEST:%' GROUP BY 1, 2, 3"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_dq_top",
+      "name": "4e0d20cc",
+      "queryLines": [
+        "SELECT check_name, entity, ts_utc, round(value) AS value, round(expected) AS expected,\r\n",
+        "       round(score, 1) AS score, severity, reason\r\n",
+        "FROM gold_dq_anomalies\r\n",
+        "WHERE entity NOT LIKE 'TEST:%'\r\n",
+        "  AND detected_at >= (SELECT max(detected_at) FROM gold_dq_anomalies) - INTERVAL 1 HOUR\r\n",
+        "ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END, abs(score) DESC\r\n",
+        "LIMIT 15"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_dq_summary",
+      "name": "87a530fa",
+      "queryLines": [
+        "SELECT detection_date, model, summary_text FROM gold_dq_daily_summary_text\r\n",
+        "ORDER BY detection_date DESC LIMIT 1"
+      ],
+      "schema": "energy_dev"
+    },
+    {
+      "catalog": "workspace",
+      "displayName": "ds_freshness",
+      "name": "b0d095ac",
+      "queryLines": [
+        "SELECT 'energy' AS source, max(hour_utc) AS latest_utc FROM gold_energy_hourly\r\n",
+        "UNION ALL SELECT 'weather (observed)', max(hour_utc) FROM gold_energy_weather_hourly WHERE wind_speed_100m_onshore_avg_ms IS NOT NULL\r\n",
+        "UNION ALL SELECT 'forecast issued', max(issue_time_utc) FROM gold_forecast_hourly"
+      ],
+      "schema": "energy_dev"
+    }
+  ],
+  "pages": [
+    {
+      "displayName": "Market",
+      "layout": [
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "2f641312",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "90e9a270",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`hour_local`",
+                      "name": "hour_local"
+                    },
+                    {
+                      "expression": "`total_load_mwh`",
+                      "name": "total_load_mwh"
+                    },
+                    {
+                      "expression": "`price_eur_mwh`",
+                      "name": "price_eur_mwh"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_local",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "displayName": "Load (MWh)",
+                        "fieldName": "total_load_mwh"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "displayName": "Price (€/MWh)",
+                        "fieldName": "price_eur_mwh"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Load and price – last 14 days"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 0
+          },
+          "widget": {
+            "name": "f40c5ea0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "90e9a270",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`hour_local`",
+                      "name": "hour_local"
+                    },
+                    {
+                      "expression": "SUM(`solar_mwh`)",
+                      "name": "sum(solar_mwh)"
+                    },
+                    {
+                      "expression": "SUM(`wind_onshore_mwh`)",
+                      "name": "sum(wind_onshore_mwh)"
+                    },
+                    {
+                      "expression": "SUM(`wind_offshore_mwh`)",
+                      "name": "sum(wind_offshore_mwh)"
+                    },
+                    {
+                      "expression": "SUM(`lignite_mwh`)",
+                      "name": "sum(lignite_mwh)"
+                    },
+                    {
+                      "expression": "SUM(`hard_coal_mwh`)",
+                      "name": "sum(hard_coal_mwh)"
+                    },
+                    {
+                      "expression": "SUM(`natural_gas_mwh`)",
+                      "name": "sum(natural_gas_mwh)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_local",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "displayName": "Solar",
+                      "fieldName": "sum(solar_mwh)"
+                    },
+                    {
+                      "displayName": "Wind onshore",
+                      "fieldName": "sum(wind_onshore_mwh)"
+                    },
+                    {
+                      "displayName": "Wind offshore",
+                      "fieldName": "sum(wind_offshore_mwh)"
+                    },
+                    {
+                      "displayName": "Lignite",
+                      "fieldName": "sum(lignite_mwh)"
+                    },
+                    {
+                      "displayName": "Hard coal",
+                      "fieldName": "sum(hard_coal_mwh)"
+                    },
+                    {
+                      "displayName": "Natural gas",
+                      "fieldName": "sum(natural_gas_mwh)"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Generation mix (MWh per hour)"
+              },
+              "mark": {
+                "layout": "stack"
+              },
+              "version": 3,
+              "widgetType": "area"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 2,
+            "width": 4,
+            "x": 0,
+            "y": 6
+          },
+          "widget": {
+            "name": "ctr_load_gwh",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0a3a71ba",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`date_local`",
+                      "name": "date_local"
+                    },
+                    {
+                      "expression": "`load_gwh`",
+                      "name": "load_gwh"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`date_local`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "period": {
+                  "fieldName": "date_local",
+                  "hideLabels": false
+                },
+                "value": {
+                  "fieldName": "load_gwh"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Load (GWh)"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 2,
+            "width": 4,
+            "x": 4,
+            "y": 6
+          },
+          "widget": {
+            "name": "ctr_avg_price",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0a3a71ba",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`date_local`",
+                      "name": "date_local"
+                    },
+                    {
+                      "expression": "`avg_price`",
+                      "name": "avg_price"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`date_local`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "period": {
+                  "fieldName": "date_local",
+                  "hideLabels": false
+                },
+                "value": {
+                  "fieldName": "avg_price"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg price (EUR/MWh)"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 2,
+            "width": 4,
+            "x": 8,
+            "y": 6
+          },
+          "widget": {
+            "name": "ctr_renewables",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0a3a71ba",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`date_local`",
+                      "name": "date_local"
+                    },
+                    {
+                      "expression": "`renewables_pct`",
+                      "name": "renewables_pct"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`date_local`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "period": {
+                  "fieldName": "date_local",
+                  "hideLabels": false
+                },
+                "value": {
+                  "fieldName": "renewables_pct"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Renewables (%)"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "405f8842",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Merit order",
+      "layout": [
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "1c577db2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6f1699f4",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`wind_ms`",
+                      "name": "wind_ms"
+                    },
+                    {
+                      "expression": "`avg_price`",
+                      "name": "avg_price"
+                    },
+                    {
+                      "expression": "`ren_share`",
+                      "name": "ren_share"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "wind_ms",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "displayName": "Avg price (€/MWh)",
+                        "fieldName": "avg_price"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "displayName": "Renewables share",
+                        "fieldName": "ren_share"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "More wind, lower price (night hours)"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "327fdda0",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Forecast",
+      "layout": [
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "98e23e97",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "44649444",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`target_hour_local`",
+                      "name": "target_hour_local"
+                    },
+                    {
+                      "expression": "`forecast`",
+                      "name": "forecast"
+                    },
+                    {
+                      "expression": "`same_hour_last_week`",
+                      "name": "same_hour_last_week"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`target` = 'total_load_mwh'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "target_hour_local",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "displayName": "Forecast",
+                      "fieldName": "forecast"
+                    },
+                    {
+                      "displayName": "Same hour last week",
+                      "fieldName": "same_hour_last_week"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Load forecast for tomorrow vs. same hour last week"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 0
+          },
+          "widget": {
+            "name": "line_fc_load",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "44649444",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`target_hour_local`",
+                      "name": "target_hour_local"
+                    },
+                    {
+                      "expression": "`forecast`",
+                      "name": "forecast"
+                    },
+                    {
+                      "expression": "`same_hour_last_week`",
+                      "name": "same_hour_last_week"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`target` = 'price_eur_mwh'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "target_hour_local",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "displayName": "Forecast",
+                      "fieldName": "forecast"
+                    },
+                    {
+                      "displayName": "Same hour last week",
+                      "fieldName": "same_hour_last_week"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Price forecast for tomorrow vs. same hour last week"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 6
+          },
+          "widget": {
+            "name": "bae26ce2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "17ae361a",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`target_hour_local`",
+                      "name": "target_hour_local"
+                    },
+                    {
+                      "expression": "`forecast`",
+                      "name": "forecast"
+                    },
+                    {
+                      "expression": "`actual`",
+                      "name": "actual"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`target` = 'total_load_mwh'"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "target_hour_local",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "displayName": "Forecast",
+                      "fieldName": "forecast"
+                    },
+                    {
+                      "displayName": "Actual",
+                      "fieldName": "actual"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Forecast vs. actual"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 6
+          },
+          "widget": {
+            "name": "8361f9ec",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "b0e99bee",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`issue_date`",
+                      "name": "issue_date"
+                    },
+                    {
+                      "expression": "`target`",
+                      "name": "target"
+                    },
+                    {
+                      "expression": "`n_hours`",
+                      "name": "n_hours"
+                    },
+                    {
+                      "expression": "`mae`",
+                      "name": "mae"
+                    },
+                    {
+                      "expression": "`baseline_mae`",
+                      "name": "baseline_mae"
+                    },
+                    {
+                      "expression": "`mape`",
+                      "name": "mape"
+                    },
+                    {
+                      "expression": "`model_better`",
+                      "name": "model_better"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "issue_date"
+                  },
+                  {
+                    "fieldName": "target"
+                  },
+                  {
+                    "fieldName": "n_hours"
+                  },
+                  {
+                    "fieldName": "mae"
+                  },
+                  {
+                    "fieldName": "baseline_mae"
+                  },
+                  {
+                    "fieldName": "mape"
+                  },
+                  {
+                    "fieldName": "model_better"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily forecast accuracy"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "91a86974",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Data quality",
+      "layout": [
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "91e7a34e",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6639fbad",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`severity`",
+                      "name": "severity"
+                    },
+                    {
+                      "expression": "`day`",
+                      "name": "day"
+                    },
+                    {
+                      "expression": "SUM(`n`)",
+                      "name": "sum(n)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "severity",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(n)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data-quality findings per day"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 0
+          },
+          "widget": {
+            "name": "0fe28aa5",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4e0d20cc",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`check_name`",
+                      "name": "check_name"
+                    },
+                    {
+                      "expression": "`entity`",
+                      "name": "entity"
+                    },
+                    {
+                      "expression": "`ts_utc`",
+                      "name": "ts_utc"
+                    },
+                    {
+                      "expression": "`value`",
+                      "name": "value"
+                    },
+                    {
+                      "expression": "`expected`",
+                      "name": "expected"
+                    },
+                    {
+                      "expression": "`score`",
+                      "name": "score"
+                    },
+                    {
+                      "expression": "`severity`",
+                      "name": "severity"
+                    },
+                    {
+                      "expression": "`reason`",
+                      "name": "reason"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "check_name"
+                  },
+                  {
+                    "fieldName": "entity"
+                  },
+                  {
+                    "fieldName": "ts_utc"
+                  },
+                  {
+                    "fieldName": "value"
+                  },
+                  {
+                    "fieldName": "expected"
+                  },
+                  {
+                    "fieldName": "score"
+                  },
+                  {
+                    "fieldName": "severity"
+                  },
+                  {
+                    "fieldName": "reason"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top findings (last 24 h)"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 0,
+            "y": 6
+          },
+          "widget": {
+            "name": "e31b3902",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "87a530fa",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`detection_date`",
+                      "name": "detection_date"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`summary_text`",
+                      "name": "summary_text"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "detection_date"
+                  },
+                  {
+                    "fieldName": "model"
+                  },
+                  {
+                    "fieldName": "summary_text"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily data-quality report (LLM)"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 6,
+            "x": 6,
+            "y": 6
+          },
+          "widget": {
+            "name": "0d5dc9ef",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "b0d095ac",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`source`",
+                      "name": "source"
+                    },
+                    {
+                      "expression": "`latest_utc`",
+                      "name": "latest_utc"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "source"
+                  },
+                  {
+                    "fieldName": "latest_utc"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data freshness"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "c89c59c1",
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "applyModeEnabled": false,
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    }
+  }
+}

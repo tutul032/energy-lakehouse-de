@@ -15,6 +15,7 @@ Portfolio project: German energy data engineering on Databricks.
 ```
 databricks.yml              # bundle root: variables + targets (dev/staging/prod)
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
+  energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
 src/energy_lakehouse/       # pure, unit-tested Python package
   utils.py                  #   table_name() helper
   smard_config.py           #   SMARD series list (filter_id, name, region, unit)
@@ -35,6 +36,8 @@ src/energy_lakehouse/       # pure, unit-tested Python package
                             #   completeness, physics rules, forecast drift; summary/MERGE SQL, LLM prompt
   contracts.py              #   data contracts: pydantic models, YAML loader, SQL renderers,
                             #   schema/quality/freshness checks, product-page markdown
+  dashboard.py              #   per-target dashboard build: TARGET_SCHEMAS, build_dashboard (stdlib)
+src/energy_market_de.lvdash.json # dashboard source, exported from dev (workspace.energy_dev.<table>)
 contracts/                  # data contracts, one <table>.yaml each (gold incl. gold_dq_* + silver_weather_forecast_hourly)
 src/pipelines/              # Lakeflow Spark Declarative Pipeline sources (energy_pipeline)
   bronze.py                 #   bronze_smard_raw   (streaming table, Auto Loader)
@@ -56,6 +59,8 @@ src/notebooks/              # Databricks notebooks (source format .py)
   21_dq_summary_llm.py      #   dq_summary_llm task: optional ai_query summary -> gold_dq_daily_summary_text
 scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per source, $LASTEXITCODE checks)
 scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>.md (--check)
+scripts/build_dashboard.py  # src dashboard -> build/energy_market_de.<target>.lvdash.json (--target)
+build/                      # built dashboard files (gitignored)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
@@ -90,7 +95,8 @@ uv run python -m energy_lakehouse.extract_local --source weather --mode archive 
 uv run python scripts/render_contract_docs.py          # regenerate docs/data-products/*.md
 uv run python scripts/render_contract_docs.py --check  # exit 1 if a page is out of date
 
-databricks bundle validate -t dev -p free
+uv run python scripts/build_dashboard.py               # build/energy_market_de.<target>.lvdash.json
+databricks bundle validate -t dev -p free              # needs the build first (dashboard file_path)
 databricks bundle deploy   -t dev -p free
 databricks bundle run hello_job -t dev -p free
 databricks bundle run extract_smard_job -t dev -p free
@@ -319,6 +325,24 @@ builds its own tables in its own schema.
     `uv run pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column
     = MINOR; descriptions, rules, tags, SLA wording = PATCH. Never edit `docs/data-products/` by
     hand.
+- **AI/BI dashboard (edit → export → build):** the dev UI needs fully qualified dataset SQL, so
+  `src/energy_market_de.lvdash.json` is the dev source with `workspace.energy_dev.<table>`.
+  1. **Edit** the dashboard in the dev workspace UI (tables as `workspace.energy_dev.<table>`, no
+     backticks; every dataset used by a widget).
+  2. **Export** only the JSON, so `resources/energy_market_de.dashboard.yml` is never overwritten:
+     `databricks bundle generate dashboard --existing-id <dashboard-id> --key energy_market_de
+     -s src -d $env:TEMP\dashboard_export --force -t dev -p free` (one line; the YAML written to
+     `$env:TEMP` is discarded; `<dashboard-id>` from `databricks lakeview list -p free`).
+  3. **Build** `uv run python scripts/build_dashboard.py`: writes
+     `build/energy_market_de.<target>.lvdash.json` with `workspace.energy_dev.` replaced by
+     `workspace.<schema>.` (`energy_lakehouse.dashboard.TARGET_SCHEMAS`, must match
+     `databricks.yml`). Each target overrides the dashboard `file_path` with its built file, so
+     build before every `bundle validate/deploy`; `build/` is gitignored. CI builds before
+     validate (`ci.yml`) and before deploy (`deploy-staging.yml` / `deploy-prod.yml`, stdlib only:
+     `PYTHONPATH=src python3 scripts/build_dashboard.py --target <target>`).
+  4. `uv run pytest`, commit the source JSON. `tests/test_dashboard.py`: the source SQL names
+     only `workspace.energy_dev.` (never energy_staging/energy_prod, no other energy_dev form),
+     each built file's SQL names only its own schema, every dataset is used by a widget.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

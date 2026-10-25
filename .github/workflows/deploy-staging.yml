@@ -31,6 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      # Stdlib-only build (no uv/package install needed); file_path points at the built file.
+      - name: Build dashboard file (staging)
+        run: python3 scripts/build_dashboard.py --target staging
+        env:
+          PYTHONPATH: src
       - name: Deploy bundle (staging)
         run: databricks bundle deploy -t staging
       - name: Run daily_refresh_job (staging)

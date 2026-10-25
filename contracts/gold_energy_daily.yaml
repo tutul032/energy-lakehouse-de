@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: DataContract
 id: energy.gold_energy_daily
-version: 1.0.0
+version: 1.2.0
 status: active
 owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
 description: "Daily German energy totals and price statistics per Europe/Berlin calendar day (SMARD, CC BY 4.0). One row per local day."
@@ -32,6 +32,10 @@ columns:
   - {name: price_max_eur_mwh, type: DOUBLE, description: "Highest hourly day-ahead price (EUR/MWh)."}
   - {name: renewables_share_avg, type: DOUBLE, description: "Average of the hourly renewables_share."}
   - {name: hour_count, type: BIGINT, nullable: false, description: "Hours in the day: 24, or 23/25 on DST change days."}
+  - {name: load_hours, type: BIGINT, nullable: false, description: "Hours with a published total_load_mwh (non-NULL)."}
+  - {name: price_hours, type: BIGINT, nullable: false, description: "Hours with a published price_eur_mwh (non-NULL)."}
+  - {name: expected_hours, type: INT, nullable: false, description: "Local hours in the day: 24, or 23/25 on DST change days."}
+  - {name: is_complete, type: BOOLEAN, nullable: false, description: "True if load_hours and price_hours both equal expected_hours."}
 quality:
   - {name: unique_day, type: unique, columns: [date_local]}
   # The newest 2 days may be incomplete (tomorrow's day-ahead prices, publication delay).
@@ -40,6 +44,16 @@ quality:
     sql: "hour_count BETWEEN 23 AND 25"
     where: "date_local < (SELECT date_sub(max(date_local), 1) FROM {table})"
     max_violation_pct: 0
+  # Complete days: the daily load equals the sum of the hourly loads (0.1 % tolerance).
+  - name: complete_day_load_matches_hourly
+    type: sql_check
+    sql: |
+      SELECT count(*) AS violations
+      FROM {catalog}.{schema}.gold_energy_daily d
+      JOIN (SELECT to_date(hour_local) AS date_local, sum(total_load_mwh) AS hourly_sum
+            FROM {catalog}.{schema}.gold_energy_hourly GROUP BY 1) h USING (date_local)
+      WHERE d.is_complete AND abs(d.total_load_mwh - h.hourly_sum) > 0.001 * h.hourly_sum
+    max_violations: 0
   # Small tolerance: the average of equal prices can differ from them by floating-point rounding.
   - {name: price_stats_ordered, type: row_condition, sql: "price_avg_eur_mwh IS NULL OR (price_min_eur_mwh <= price_avg_eur_mwh + 0.001 AND price_avg_eur_mwh <= price_max_eur_mwh + 0.001)", max_violation_pct: 0}
   - {name: share_avg_in_range, type: row_condition, sql: "renewables_share_avg IS NULL OR renewables_share_avg BETWEEN 0 AND 1.5", max_violation_pct: 0}

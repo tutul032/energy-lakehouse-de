@@ -41,6 +41,18 @@ def test_parse_landing_path_rejects_other_files():
         transforms.parse_landing_path("/Volumes/x/landing/smard/filter=410/readme.txt")
 
 
+@pytest.mark.parametrize(
+    ("day", "expected"),
+    [
+        (date(2026, 10, 25), 25),  # CEST -> CET: 03:00 back to 02:00
+        (date(2027, 3, 28), 23),  # CET -> CEST: 02:00 jumps to 03:00
+        (date(2026, 7, 1), 24),
+    ],
+)
+def test_expected_local_hours_dst(day, expected):
+    assert transforms.expected_local_hours(day) == expected
+
+
 def test_agg_rule_by_unit():
     assert transforms.agg_rule("MWh") == "sum"
     assert transforms.agg_rule("EUR/MWh") == "avg"
