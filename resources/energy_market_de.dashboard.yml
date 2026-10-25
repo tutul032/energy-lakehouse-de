@@ -1,0 +1,16 @@
+resources:
+  dashboards:
+    energy_market_de:
+      display_name: "Energy Market DE"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ../src/energy_market_de.lvdash.json
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
+      embed_credentials: true
+      permissions:
+        - group_name: energy-consumers
+          level: CAN_READ
+        - user_name: ${var.alert_email}
+          level: CAN_MANAGE
+        - service_principal_name: ${var.cicd_sp_app_id}
+          level: CAN_MANAGE
