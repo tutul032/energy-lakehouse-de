@@ -274,6 +274,52 @@ def test_quality_sql_where_substitutes_table():
     )
 
 
+@pytest.fixture
+def load_check_rule():
+    daily = BY_TABLE["gold_energy_daily"]
+    return next(r for r in daily.quality if r.name == "complete_day_load_matches_hourly")
+
+
+def test_sql_check_sql_substitutes_catalog_and_schema(load_check_rule):
+    assert load_check_rule.type == "sql_check"
+    sql = contracts.sql_check_sql(load_check_rule, "workspace", "energy_prod")
+    assert "{catalog}" not in sql and "{schema}" not in sql
+    assert sql.startswith("SELECT count(*) AS violations\n")  # run as-is, not wrapped
+    assert "FROM `workspace`.`energy_prod`.gold_energy_daily d" in sql
+    assert (
+        "FROM `workspace`.`energy_prod`.gold_energy_hourly GROUP BY 1) h USING (date_local)" in sql
+    )
+    assert sql.endswith("> 0.001 * h.hourly_sum")
+
+
+def test_sql_check_result_fails_above_max_violations(load_check_rule):
+    daily = BY_TABLE["gold_energy_daily"]
+    failed = contracts.sql_check_result(daily, load_check_rule, 3)
+    assert not failed.passed
+    assert failed.detail == "3 violations; limit 0"
+    assert contracts.sql_check_result(daily, load_check_rule, 0).passed
+    lenient = load_check_rule.model_copy(update={"max_violations": 5})
+    assert contracts.sql_check_result(daily, lenient, 5).passed
+
+
+def test_sql_check_is_not_wrapped_by_quality_sql(load_check_rule):
+    daily = BY_TABLE["gold_energy_daily"]
+    with pytest.raises(ValueError, match="run as-is"):
+        contracts.quality_sql(daily, load_check_rule, "workspace", "energy_prod")
+    row_rule = next(r for r in daily.quality if r.name == "complete_days")
+    with pytest.raises(ValueError, match="not a sql_check"):
+        contracts.sql_check_sql(row_rule, "workspace", "energy_prod")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"sql": "SELECT 0 AS violations", "where": "x"}, {"sql": "SELECT 1", "columns": ["a"]}],
+)
+def test_sql_check_shape_rejected(extra):
+    with pytest.raises(ValueError, match="sql_check needs"):
+        contracts.QualityRule(name="r", type="sql_check", **extra)
+
+
 def test_quality_sql_latest_issue_complete():
     contract = BY_TABLE["gold_forecast_hourly"]
     rule = next(r for r in contract.quality if r.name == "latest_issue_complete")

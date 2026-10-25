@@ -58,6 +58,11 @@ def gold_energy_hourly():
     )
 
 
+def _local_midnight_epoch(day):
+    """Epoch seconds of 00:00 Europe/Berlin on ``day`` (session time zone is UTC)."""
+    return F.to_utc_timestamp(day.cast("timestamp"), LOCAL_TZ).cast("long")
+
+
 @dp.materialized_view(
     name="gold_energy_daily",
     comment=GOLD_TABLE_COMMENTS["gold_energy_daily"],
@@ -65,6 +70,11 @@ def gold_energy_hourly():
 )
 def gold_energy_daily():
     sums = [F.sum(c).alias(c) for c in [*ENERGY_COLS, "renewables_mwh"]]
+    # Local midnight to next local midnight: 23/24/25 h (as transforms.expected_local_hours).
+    next_day = F.date_add("date_local", 1)
+    expected_hours = (
+        (_local_midnight_epoch(next_day) - _local_midnight_epoch(F.col("date_local"))) / 3600
+    ).cast("int")
     return (
         spark.read.table("gold_energy_hourly")
         .groupBy(F.to_date("hour_local").alias("date_local"))
@@ -74,7 +84,16 @@ def gold_energy_daily():
             F.min("price_eur_mwh").alias("price_min_eur_mwh"),
             F.max("price_eur_mwh").alias("price_max_eur_mwh"),
             F.avg("renewables_share").alias("renewables_share_avg"),
+            # Rows per day, including hours whose values SMARD has not published yet.
             F.count(F.lit(1)).alias("hour_count"),
+            F.count("total_load_mwh").alias("load_hours"),
+            F.count("price_eur_mwh").alias("price_hours"),
+        )
+        .withColumn("expected_hours", expected_hours)
+        .withColumn(
+            "is_complete",
+            (F.col("load_hours") == F.col("expected_hours"))
+            & (F.col("price_hours") == F.col("expected_hours")),
         )
         .select(*[name for name, _, _ in DAILY_COLUMNS])
     )

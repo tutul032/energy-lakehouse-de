@@ -31,6 +31,8 @@ TAG_KEY_REGEX = r"^[A-Za-z_][A-Za-z0-9_]*$"
 RESERVED_TAG_KEYS = ("contract_id", "contract_version")
 # Placeholder in a rule's `sql`/`where` for the quoted table name (e.g. for a subquery).
 TABLE_PLACEHOLDER = "{table}"
+# `{table:<name>}`: another table in the same catalog/schema (e.g. a daily table's hourly source).
+OTHER_TABLE_REGEX = r"\{table:([a-z_][a-z0-9_]*)\}"
 
 # Name of the implicit not-null rule generated from columns with `nullable: false`.
 NOT_NULL_RULE = "required_columns_not_null"
@@ -90,18 +92,24 @@ class QualityRule(_Model):
     - ``unique``: rows whose ``columns`` combination occurs more than once count as violations.
     - ``not_null``: rows with NULL in any of ``columns``.
     - ``row_condition``: rows where ``sql`` is not TRUE (FALSE or NULL).
+    - ``sql_check``: ``sql`` is a full SELECT returning one column ``violations``, run as-is
+      (only ``{catalog}`` / ``{schema}`` substituted); fails if violations > ``max_violations``.
     """
 
     name: str = Field(pattern=IDENTIFIER_REGEX)
-    type: Literal["unique", "not_null", "row_condition"]
+    type: Literal["unique", "not_null", "row_condition", "sql_check"]
     columns: list[str] = []
     sql: str | None = None
     where: str | None = None
     max_violation_pct: float = Field(default=0, ge=0, le=100)
+    max_violations: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _check_shape(self) -> "QualityRule":
-        if self.type == "row_condition":
+        if self.type == "sql_check":
+            if not self.sql or self.columns or self.where:
+                raise ValueError(f"{self.name}: sql_check needs `sql` and no `columns`/`where`")
+        elif self.type == "row_condition":
             if not self.sql or self.columns:
                 raise ValueError(f"{self.name}: row_condition needs `sql` and no `columns`")
         elif not self.columns or self.sql:
@@ -201,8 +209,10 @@ def table_fqn(contract: DataContract, catalog: str, schema: str) -> str:
     return table_name(catalog, schema, contract.table)
 
 
-def _fill_table(sql: str, fqn: str) -> str:
-    return sql.replace(TABLE_PLACEHOLDER, fqn)
+def _fill_table(sql: str, fqn: str, catalog: str, schema: str) -> str:
+    """Replace ``{table}`` with ``fqn`` and ``{table:<name>}`` with that table in catalog.schema."""
+    sql = sql.replace(TABLE_PLACEHOLDER, fqn)
+    return re.sub(OTHER_TABLE_REGEX, lambda m: table_name(catalog, schema, m[1]), sql)
 
 
 # --- apply: comments, tags, grants ------------------------------------------------------------
@@ -351,9 +361,11 @@ def quality_rules(contract: DataContract) -> list[QualityRule]:
 
 
 def quality_sql(contract: DataContract, rule: QualityRule, catalog: str, schema: str) -> str:
-    """SQL returning one row ``total_rows, violations`` for ``rule``."""
+    """SQL returning one row ``total_rows, violations`` for ``rule`` (not for ``sql_check``)."""
+    if rule.type == "sql_check":
+        raise ValueError(f"{rule.name}: sql_check rules run as-is, use sql_check_sql()")
     fqn = table_fqn(contract, catalog, schema)
-    source = f"{fqn} WHERE ({_fill_table(rule.where, fqn)})" if rule.where else fqn
+    source = f"{fqn} WHERE ({_fill_table(rule.where, fqn, catalog, schema)})" if rule.where else fqn
     if rule.type == "unique":
         keys = ", ".join(quote_identifier(c) for c in rule.columns)
         return (
@@ -364,7 +376,7 @@ def quality_sql(contract: DataContract, rule: QualityRule, catalog: str, schema:
     if rule.type == "not_null":
         condition = " OR ".join(f"{quote_identifier(c)} IS NULL" for c in rule.columns)
     else:
-        condition = f"NOT coalesce(({_fill_table(rule.sql, fqn)}), FALSE)"
+        condition = f"NOT coalesce(({_fill_table(rule.sql, fqn, catalog, schema)}), FALSE)"
     return f"SELECT count(*) AS total_rows, count_if({condition}) AS violations FROM {source}"
 
 
@@ -377,6 +389,20 @@ def quality_result(
         f"{violations} of {total_rows} rows ({pct:.2f}%) violate; limit {rule.max_violation_pct:g}%"
     )
     return CheckResult(f"{contract.table} {rule.name}", pct <= rule.max_violation_pct, detail)
+
+
+def sql_check_sql(rule: QualityRule, catalog: str, schema: str) -> str:
+    """The ``sql_check`` SELECT with ``{catalog}`` / ``{schema}`` replaced by quoted names."""
+    if rule.type != "sql_check":
+        raise ValueError(f"{rule.name}: not a sql_check rule")
+    sql = rule.sql.strip().replace("{catalog}", quote_identifier(catalog))
+    return sql.replace("{schema}", quote_identifier(schema))
+
+
+def sql_check_result(contract: DataContract, rule: QualityRule, violations: int) -> CheckResult:
+    """Pass if the ``sql_check`` query's ``violations`` is at most ``rule.max_violations``."""
+    detail = f"{violations} violations; limit {rule.max_violations}"
+    return CheckResult(f"{contract.table} {rule.name}", violations <= rule.max_violations, detail)
 
 
 def freshness_sql(contract: DataContract, catalog: str, schema: str) -> str:
@@ -413,11 +439,19 @@ def _rule_check(rule: QualityRule) -> str:
         check = "unique: " + ", ".join(f"`{c}`" for c in rule.columns)
     elif rule.type == "not_null":
         check = "not NULL: " + ", ".join(f"`{c}`" for c in rule.columns)
+    elif rule.type == "sql_check":
+        check = "SQL check (violations): `" + " ".join(rule.sql.split()) + "`"
     else:
         check = f"`{rule.sql}`"
     if rule.where:
         check += f" (only rows where `{rule.where}`)"
     return _cell(check)
+
+
+def _rule_limit(rule: QualityRule) -> str:
+    if rule.type == "sql_check":
+        return f"{rule.max_violations} rows"
+    return f"{rule.max_violation_pct:g}%"
 
 
 def render_markdown(
@@ -464,10 +498,7 @@ def render_markdown(
         "",
         "| Rule | Check | Max violations |",
         "|---|---|---|",
-        *[
-            f"| `{r.name}` | {_rule_check(r)} | {r.max_violation_pct:g}% |"
-            for r in quality_rules(contract)
-        ],
+        *[f"| `{r.name}` | {_rule_check(r)} | {_rule_limit(r)} |" for r in quality_rules(contract)],
         "",
         "## Request access",
         "",

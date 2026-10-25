@@ -29,11 +29,19 @@ variables:
     description: Application ID of the service principal GitHub Actions uses to run daily_refresh_job.
   alert_email:
     description: Address notified when daily_refresh_job fails (also the owner user in staging/prod).
+  warehouse_id:
+    description: SQL warehouse that runs the AI/BI dashboard queries (databricks warehouses list).
+    default: 4228ff3a910b0b5e  # Serverless Starter Warehouse (one workspace, all targets)
 
 targets:
   dev:
     mode: development
     default: true
+    # Dashboard built for this target by scripts/build_dashboard.py (dev source with its schema).
+    resources:
+      dashboards:
+        energy_market_de:
+          file_path: build/energy_market_de.dev.lvdash.json
     variables:
       schema: energy_dev
       cicd_sp_app_id: 7d0f1e32-4a86-42e2-b352-461dae1b3634
@@ -46,6 +54,11 @@ targets:
     # used"). In a multi-workspace setup (one workspace per target) the prefix would not be needed.
     presets:
       name_prefix: "[staging] "
+    # Dashboard built for this target by scripts/build_dashboard.py (dev source with its schema).
+    resources:
+      dashboards:
+        energy_market_de:
+          file_path: build/energy_market_de.staging.lvdash.json
     workspace:
       # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
@@ -68,6 +81,11 @@ targets:
     # used"). In a multi-workspace setup (one workspace per target) the prefix would not be needed.
     presets:
       name_prefix: "[prod] "
+    # Dashboard built for this target by scripts/build_dashboard.py (dev source with its schema).
+    resources:
+      dashboards:
+        energy_market_de:
+          file_path: build/energy_market_de.prod.lvdash.json
     workspace:
       # Private to the deploying identity (the CI/CD SP in CI), unlike /Workspace/Shared.
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

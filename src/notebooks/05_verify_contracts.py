@@ -4,8 +4,9 @@
 # MAGIC Verifies the contracted tables of the target schema against `contracts/*.yaml` (task
 # MAGIC `verify_contracts` of `daily_refresh_job`): (a) schema via `information_schema.columns`
 # MAGIC (missing/extra columns, type mismatches), (b) quality rules (violation % above
-# MAGIC `max_violation_pct`), (c) freshness (`sla.freshness_column` older than
-# MAGIC `sla.freshness_hours`). Prints one result table and fails listing every failed check.
+# MAGIC `max_violation_pct`; `sql_check` rules: violations above `max_violations`), (c) freshness
+# MAGIC (`sla.freshness_column` older than `sla.freshness_hours`). Prints one result table and fails
+# MAGIC listing every failed check.
 # MAGIC Contracts with status `draft` or `retired` are skipped (`contracts.is_enforced`).
 
 # COMMAND ----------
@@ -51,6 +52,10 @@ for contract in contracts.load_contracts():
 
     for rule in contracts.quality_rules(contract):
         try:
+            if rule.type == "sql_check":
+                row = spark.sql(contracts.sql_check_sql(rule, catalog, schema)).first()
+                results.append(contracts.sql_check_result(contract, rule, int(row["violations"])))
+                continue
             row = spark.sql(contracts.quality_sql(contract, rule, catalog, schema)).first()
             results.append(
                 contracts.quality_result(

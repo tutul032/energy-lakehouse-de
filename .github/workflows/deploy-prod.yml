@@ -34,6 +34,11 @@ jobs:
         with:
           ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
       - uses: databricks/setup-cli@main
+      # Stdlib-only build (no uv/package install needed); file_path points at the built file.
+      - name: Build dashboard file (prod)
+        run: python3 scripts/build_dashboard.py --target prod
+        env:
+          PYTHONPATH: src
       - name: Deploy bundle (prod)
         run: databricks bundle deploy -t prod
       - name: Bundle summary (prod)

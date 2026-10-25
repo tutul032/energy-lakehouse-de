@@ -70,10 +70,12 @@ resources:
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
+        # No retries: a failed contract check is a signal, not a transient error.
         - task_key: verify_contracts
           depends_on:
             - task_key: apply_contracts
           environment_key: contracts
+          max_retries: 0
           notebook_task:
             notebook_path: ../src/notebooks/05_verify_contracts.py
             base_parameters:
