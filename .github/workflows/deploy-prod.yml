@@ -3,6 +3,8 @@ name: deploy-prod
 # Deploy the prod target from a release tag (v*) as the CI/CD service principal.
 # The `production` environment requires an approval (Settings -> Environments). The job is not
 # run here: daily-refresh.yml triggers the prod daily_refresh_job.
+# Manual runs can set `force` to overwrite resources modified in the prod UI (`bundle deploy
+# --force`, see docs/runbook.md "Dashboard modified remotely"); release runs never force.
 on:
   release:
     types: [published]
@@ -11,6 +13,10 @@ on:
       tag:
         description: Release tag to deploy (e.g. v1.2.0)
         required: true
+      force:
+        description: Overwrite remote changes (bundle deploy --force); see docs/runbook.md
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-prod
@@ -44,7 +50,16 @@ jobs:
         run: python3 scripts/build_dashboard.py --target prod
         env:
           PYTHONPATH: src
+      # inputs.force exists only on workflow_dispatch; a release event always deploys without it.
       - name: Deploy bundle (prod)
-        run: databricks bundle deploy -t prod
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "::warning::Deploying with --force: remote changes in prod are overwritten."
+            databricks bundle deploy -t prod --force
+          else
+            databricks bundle deploy -t prod
+          fi
       - name: Bundle summary (prod)
         run: databricks bundle summary -t prod
