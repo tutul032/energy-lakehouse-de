@@ -74,17 +74,28 @@ read the same raw files. Design decisions are recorded in [docs/adr/](docs/adr/)
 - Merit-order effect: the *Merit order* dashboard page plots the average night-time price (local
   00:00–05:59) against onshore wind speed at 100 m. Higher wind speeds come with lower prices.
 
-<!--
-Screenshots: add the files to docs/img/ and uncomment.
+## Screenshots
 
+**Market overview**: load and day-ahead price over the last 14 days, generation mix, and KPIs for the latest complete day.
 ![Dashboard: Market](docs/img/market_page.jpg)
+
+**Merit-order effect**: at night, more wind means a higher renewables share and a lower price.
 ![Dashboard: Merit order](docs/img/meritOrder_page.jpg)
+
+**Day-ahead forecast**: tomorrow's load and price vs. the same hour last week, forecast vs. actual, and daily accuracy against the baseline.
 ![Dashboard: Forecast](docs/img/forecast_page.jpg)
+
+**Data quality**: findings per day by severity, top-ranked warnings, an LLM-written daily report, and data freshness.
 ![Dashboard: Data quality](docs/img/dataQuality_page.jpg)
+
+**Genie agent**: a plain-language question answered with generated SQL against the gold tables.
 ![Genie agent](docs/img/GenieAnswer.jpg)
-![Lakeflow pipeline graph](docs/img/Pipeline.jpg)
+
+**Lakeflow Job**: pipeline → quality checks → contracts → forecast → accuracy → anomaly detection → LLM summary.
+![Lakeflow job graph](docs/img/Pipeline.jpg)
+
+**Approval-gated production release**: prod deploys only from a GitHub release after manual approval.
 ![Approval-gated prod deploy](docs/img/deployProd.jpg)
--->
 
 ## Tech stack
 
