@@ -1,35 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "energy-lakehouse-de"
 version = "0.1.0"
 description = "German energy data engineering on Databricks (SMARD + Open-Meteo)."
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+# 3.11: serverless job environment_version "2" runs Python 3.11 (pip rejects the wheel
+# otherwise); the pipeline and local dev/CI use 3.12.
+requires-python = ">=3.11,<3.13"
+# Runtime dependencies of the wheel (installed with it in job environments and the pipeline).
+# Never list packages the Databricks serverless runtime provides (pyspark, databricks-connect,
+# delta-spark, numpy, pandas, pyarrow): reinstalling them breaks Spark initialization.
 dependencies = [
     "holidays>=0.60",
-    "pandas>=2.2",
+    "mlflow>=2.16",
     "pydantic>=2.7",
     "pyyaml>=6",
     "requests>=2.31",
-]
-
-[dependency-groups]
-dev = [
-    "mlflow>=2.16",
-    "pytest>=8",
-    "ruff>=0.6",
     "scikit-learn>=1.5",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[dependency-groups]
+# Local only. pandas is provided by the Databricks runtime, so it is not a wheel dependency.
+dev = [
+    "pandas>=2.2",
+    "pre-commit>=4.7.0",
+    "pytest>=8",
+    "ruff>=0.6",
+]
 
+# Only the package goes into the wheel (no notebooks, pipelines, tests or contracts).
 [tool.hatch.build.targets.wheel]
 packages = ["src/energy_lakehouse"]
 
-
-
-
+# contracts/ (repo root, the single source) ships in the wheel as package data;
+# contracts.load_contracts() reads it via importlib.resources.
+[tool.hatch.build.targets.wheel.force-include]
+"contracts" = "energy_lakehouse/contracts_data"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -37,13 +46,12 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"  # oldest runtime: requires-python
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# Databricks notebooks: `spark`/`dbutils` are injected globals; imports follow sys.path setup.
-"src/notebooks/*.py" = ["F821", "E402"]
-# Pipeline sources: `spark` is injected; energy_lakehouse imports follow the sys.path fallback.
-"src/pipelines/*.py" = ["F821", "E402"]
+# Databricks notebooks and pipeline sources: `spark`/`dbutils` are injected globals.
+"src/notebooks/*.py" = ["F821"]
+"src/pipelines/*.py" = ["F821"]

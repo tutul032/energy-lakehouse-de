@@ -9,15 +9,19 @@ resources:
       channel: CURRENT
       catalog: ${var.catalog}
       schema: ${var.schema}
-      # root_path is added to sys.path, so pipeline code can `import energy_lakehouse`.
-      root_path: ../src
+      # Pipeline root folder (editor). Deliberately not ../src: root_path is added to sys.path, and
+      # energy_lakehouse must come from the wheel below, not from the synced source files.
+      root_path: ../src/pipelines
+      # The energy_lakehouse wheel (databricks.yml artifacts; the CLI uploads it and replaces the
+      # path), so pipeline code can `import energy_lakehouse` without sys.path manipulation.
+      environment:
+        dependencies:
+          - ../dist/*.whl
       libraries:
         - glob:
             include: ../src/pipelines/**
       configuration:
         landing_path: ${var.landing_root}/smard
         weather_landing_path: ${var.landing_root}/weather
-        # Fallback import path for energy_lakehouse (see src/pipelines/*.py).
-        bundle.sourcePath: ${workspace.file_path}/src
         # Timestamps are computed in UTC; local time is derived explicitly (Europe/Berlin).
         spark.sql.session.timeZone: UTC

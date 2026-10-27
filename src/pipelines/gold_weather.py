@@ -1,14 +1,7 @@
 """Gold: hourly energy joined with weather aggregated by location role."""
 
-import sys
-
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
-
-# `root_path` (../src) is on sys.path already; this fallback covers older runtimes/CLIs.
-_src = spark.conf.get("bundle.sourcePath", None)
-if _src and _src not in sys.path:
-    sys.path.append(_src)
 
 from energy_lakehouse.transforms import (
     GOLD_ENERGY_HOURLY_COLUMNS,

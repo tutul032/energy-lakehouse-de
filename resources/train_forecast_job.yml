@@ -3,9 +3,10 @@
 # ${var.catalog}.${var.schema}.forecaster_<target> in Unity Catalog; alias `champion` moves only
 # if the new version beats the seasonal naive baseline (see src/notebooks/10_train_forecast.py).
 # Schedule: Mondays 06:37 UTC (after the 05:17 daily refresh); development mode pauses it in dev.
-# No cluster definition: tasks run on serverless compute. Libraries (scikit-learn, mlflow,
-# holidays) come from the serverless environment `forecast` only (no %pip in the notebooks); the
-# daily job's score_forecast uses the same pins. pandas/numpy are provided by the runtime.
+# No cluster definition: tasks run on serverless compute. Libraries come from the serverless
+# environment `energy_lakehouse` only (no %pip in the notebooks): the energy_lakehouse wheel plus
+# exact pins of scikit-learn, mlflow and holidays; the daily job's score_forecast uses the same
+# environment. pandas/numpy are provided by the runtime.
 resources:
   jobs:
     train_forecast_job:
@@ -25,18 +26,21 @@ resources:
         on_failure:
           - ${var.alert_email}
       environments:
-        - environment_key: forecast
+        # The energy_lakehouse wheel (databricks.yml artifacts; the CLI uploads it and replaces
+        # the path) brings its runtime dependencies. The exact pins are what the wheel cannot
+        # provide: training and scoring must unpickle models with the same library versions
+        # (same pins in train_forecast_job.yml and daily_refresh_job.yml, equal to uv.lock).
+        - environment_key: energy_lakehouse
           spec:
             environment_version: "2"
             dependencies:
+              - ../dist/*.whl
               - holidays==0.107
               - scikit-learn==1.9.1
               - mlflow==3.17.2
-              - pydantic>=2.7
-              - pyyaml>=6
       tasks:
         - task_key: train_load
-          environment_key: forecast
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/10_train_forecast.py
             base_parameters:
@@ -44,7 +48,7 @@ resources:
               schema: "{{job.parameters.schema}}"
               target: total_load_mwh
         - task_key: train_price
-          environment_key: forecast
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/10_train_forecast.py
             base_parameters:

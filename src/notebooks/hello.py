@@ -6,11 +6,6 @@
 
 # COMMAND ----------
 
-import os
-import sys
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse.utils import table_name
 
