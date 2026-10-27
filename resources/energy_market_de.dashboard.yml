@@ -7,10 +7,8 @@ resources:
       dataset_catalog: ${var.catalog}
       dataset_schema: ${var.schema}
       embed_credentials: true
+      # Only what the target permissions (databricks.yml) do not already grant: repeating the
+      # CI/CD SP / alert_email CAN_MANAGE there triggers "already has permissions set" warnings.
       permissions:
         - group_name: energy-consumers
           level: CAN_READ
-        - user_name: ${var.alert_email}
-          level: CAN_MANAGE
-        - service_principal_name: ${var.cicd_sp_app_id}
-          level: CAN_MANAGE
