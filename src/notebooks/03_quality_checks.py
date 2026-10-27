@@ -8,12 +8,7 @@
 
 # COMMAND ----------
 
-import os
-import sys
 from datetime import UTC, datetime
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse import quality
 from energy_lakehouse.transforms import WEATHER_ROLE_AGGS

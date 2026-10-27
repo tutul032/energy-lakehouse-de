@@ -1,6 +1,6 @@
 # Downloads raw SMARD chunks into the shared landing volume ${var.landing_root} (all targets).
-# No cluster definition: the notebook task runs on serverless compute. `requests` ships with the
-# serverless base environment, so no extra environment/dependency is declared.
+# No cluster definition: the notebook task runs on serverless compute. energy_lakehouse (and its
+# dependency requests) comes from the wheel in the job environment.
 resources:
   jobs:
     extract_smard_job:
@@ -12,7 +12,15 @@ resources:
           default: "8"
         - name: refresh_latest
           default: "2"
+      environments:
+        # The energy_lakehouse wheel (databricks.yml artifacts) and its runtime dependencies.
+        - environment_key: energy_lakehouse
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../dist/*.whl
       tasks:
         - task_key: extract_smard
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/01_extract_smard.py

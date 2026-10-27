@@ -12,15 +12,10 @@
 
 # COMMAND ----------
 
-import os
-import sys
 
 import mlflow
 import pandas as pd
 from mlflow.tracking import MlflowClient
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse import forecast
 from energy_lakehouse.transforms import GOLD_FORECAST_HOURLY_COLUMNS, GOLD_TABLE_COMMENTS

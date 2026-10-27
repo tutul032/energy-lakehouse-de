@@ -11,6 +11,8 @@ and returns SQL with backtick-quoted identifiers; the notebooks run it and feed 
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Literal
 
@@ -20,8 +22,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from energy_lakehouse.quality import CheckResult, freshness_check
 from energy_lakehouse.utils import quote_identifier, table_name
 
-# Repo root /contracts (also present in the bundle's synced files on Databricks).
+# Repo root /contracts: the single source, used directly only from a source checkout (tests,
+# scripts). The wheel ships a copy as package data (pyproject.toml: hatch force-include).
 CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
+CONTRACTS_PACKAGE_DATA = "contracts_data"
 
 SEMVER_REGEX = r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
 IDENTIFIER_REGEX = r"^[a-z_][a-z0-9_]*$"
@@ -172,21 +176,43 @@ class DataContract(_Model):
 # --- loading -----------------------------------------------------------------------------------
 
 
-def load_contract(path: Path | str) -> DataContract:
-    """Parse and validate one contract YAML file."""
-    path = Path(path)
+def default_contracts_dir() -> Traversable:
+    """Contracts packaged in the installed wheel, else the repo's contracts/ (source checkout)."""
+    packaged = resources.files("energy_lakehouse") / CONTRACTS_PACKAGE_DATA
+    if packaged.is_dir():
+        return packaged
+    if CONTRACTS_DIR.is_dir():
+        return CONTRACTS_DIR
+    raise FileNotFoundError(
+        f"no contracts: neither package data energy_lakehouse/{CONTRACTS_PACKAGE_DATA} "
+        f"nor {CONTRACTS_DIR}"
+    )
+
+
+def load_contract(path: Traversable | str) -> DataContract:
+    """Parse and validate one contract YAML file (a path or a package resource)."""
+    if isinstance(path, str):
+        path = Path(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path}: expected a YAML mapping")
     contract = DataContract.model_validate(data)
-    if path.stem != contract.table:
+    if Path(path.name).stem != contract.table:
         raise ValueError(f"{path}: file name must be <table>.yaml ({contract.table}.yaml)")
     return contract
 
 
-def load_contracts(directory: Path | str = CONTRACTS_DIR) -> list[DataContract]:
-    """All ``*.yaml`` contracts in ``directory``, sorted by file name; error if there are none."""
-    paths = sorted(Path(directory).glob("*.yaml"))
+def load_contracts(directory: Traversable | str | None = None) -> list[DataContract]:
+    """All ``*.yaml`` contracts in ``directory`` (default: ``default_contracts_dir()``), sorted by
+    file name; error if there are none."""
+    if directory is None:
+        directory = default_contracts_dir()
+    elif isinstance(directory, str):
+        directory = Path(directory)
+    paths = sorted(
+        (p for p in directory.iterdir() if p.is_file() and p.name.endswith(".yaml")),
+        key=lambda p: p.name,
+    )
     if not paths:
         raise FileNotFoundError(f"no contracts (*.yaml) in {directory}")
     return [load_contract(p) for p in paths]

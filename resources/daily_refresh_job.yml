@@ -7,7 +7,8 @@
 # and triggers this job via `databricks jobs run-now`, authenticated as the refresh service
 # principal (OAuth M2M), which gets CAN_MANAGE_RUN in every target (staging/prod also grant
 # CAN_MANAGE to the owner user and CI/CD SP via databricks.yml). No cluster definition: tasks run
-# on serverless compute. The notebook tasks read the target schema from the job parameters.
+# on serverless compute. The notebook tasks read the target schema from the job parameters and
+# import energy_lakehouse from the wheel installed in the job environment.
 resources:
   jobs:
     daily_refresh_job:
@@ -33,21 +34,18 @@ resources:
         on_failure:
           - ${var.alert_email}
       environments:
-        - environment_key: contracts
+        # The energy_lakehouse wheel (databricks.yml artifacts; the CLI uploads it and replaces
+        # the path) brings its runtime dependencies. The exact pins are what the wheel cannot
+        # provide: training and scoring must unpickle models with the same library versions
+        # (same pins in train_forecast_job.yml and daily_refresh_job.yml, equal to uv.lock).
+        - environment_key: energy_lakehouse
           spec:
             environment_version: "2"
             dependencies:
-              - pydantic>=2.7
-              - pyyaml>=6
-        - environment_key: forecast
-          spec:
-            environment_version: "2"
-            dependencies:
+              - ../dist/*.whl
               - holidays==0.107
               - scikit-learn==1.9.1
               - mlflow==3.17.2
-              - pydantic>=2.7
-              - pyyaml>=6
       tasks:
         - task_key: run_pipeline
           pipeline_task:
@@ -56,6 +54,7 @@ resources:
         - task_key: quality_checks
           depends_on:
             - task_key: run_pipeline
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/03_quality_checks.py
             base_parameters:
@@ -64,7 +63,7 @@ resources:
         - task_key: apply_contracts
           depends_on:
             - task_key: quality_checks
-          environment_key: contracts
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/04_apply_contracts.py
             base_parameters:
@@ -74,7 +73,7 @@ resources:
         - task_key: verify_contracts
           depends_on:
             - task_key: apply_contracts
-          environment_key: contracts
+          environment_key: energy_lakehouse
           max_retries: 0
           notebook_task:
             notebook_path: ../src/notebooks/05_verify_contracts.py
@@ -86,7 +85,7 @@ resources:
         - task_key: score_forecast
           depends_on:
             - task_key: verify_contracts
-          environment_key: forecast
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/11_score_forecast.py
             base_parameters:
@@ -95,19 +94,19 @@ resources:
         - task_key: forecast_accuracy
           depends_on:
             - task_key: score_forecast
-          environment_key: forecast
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/12_forecast_accuracy.py
             base_parameters:
               catalog: "{{job.parameters.catalog}}"
               schema: "{{job.parameters.schema}}"
-        # Anomaly detection needs scikit-learn (IsolationForest): same environment as forecasting.
+        # Anomaly detection needs scikit-learn (IsolationForest), pinned in the shared environment.
         # No retries: a failure is a deliberate signal (critical anomaly or empty input), not a
         # transient error; a retry would only repeat the same result.
         - task_key: detect_anomalies
           depends_on:
             - task_key: forecast_accuracy
-          environment_key: forecast
+          environment_key: energy_lakehouse
           max_retries: 0
           notebook_task:
             notebook_path: ../src/notebooks/20_detect_anomalies.py
@@ -121,7 +120,7 @@ resources:
           depends_on:
             - task_key: detect_anomalies
           run_if: ALL_DONE
-          environment_key: forecast
+          environment_key: energy_lakehouse
           notebook_task:
             notebook_path: ../src/notebooks/21_dq_summary_llm.py
             base_parameters:

@@ -12,10 +12,6 @@
 
 import logging
 import os
-import sys
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse.weather import extract
 from energy_lakehouse.weather_config import DEFAULT_PAST_DAYS, LOCATIONS

@@ -13,10 +13,10 @@ Portfolio project: German energy data engineering on Databricks.
 
 ## Folder layout
 ```
-databricks.yml              # bundle root: variables + targets (dev/staging/prod)
+databricks.yml              # bundle root: variables, whl artifact (energy_lakehouse), targets
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
   energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
-src/energy_lakehouse/       # pure, unit-tested Python package
+src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel, see "Wheel")
   utils.py                  #   table_name() helper
   smard_config.py           #   SMARD series list (filter_id, name, region, unit)
   http_utils.py             #   shared get_with_retry() (3 tries, backoff) + write_bytes()
@@ -61,6 +61,7 @@ scripts/sync_landing.ps1    # local landing -> shared UC volume (fs cp per sourc
 scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>.md (--check)
 scripts/build_dashboard.py  # src dashboard -> build/energy_market_de.<target>.lvdash.json (--target)
 build/                      # built dashboard files (gitignored)
+dist/                       # built energy_lakehouse wheel (uv build --wheel; gitignored)
 scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
@@ -95,6 +96,7 @@ uv run python -m energy_lakehouse.extract_local --source weather --mode archive 
 uv run python scripts/render_contract_docs.py          # regenerate docs/data-products/*.md
 uv run python scripts/render_contract_docs.py --check  # exit 1 if a page is out of date
 
+uv build --wheel --clear                               # dist/*.whl (bundle deploy builds it too)
 uv run python scripts/build_dashboard.py               # build/energy_market_de.<target>.lvdash.json
 databricks bundle validate -t dev -p free              # needs the build first (dashboard file_path)
 databricks bundle deploy   -t dev -p free
@@ -178,8 +180,9 @@ builds its own tables in its own schema.
     time by a few days; recent days may be NULL (dropped by `has_measurements`).
 - **Pipeline (`resources/energy_pipeline.yml`):** serverless, channel CURRENT, catalog/schema
   from bundle vars, sources globbed from `src/pipelines/**`. Use `from pyspark import pipelines
-  as dp`. `root_path: ../src` puts `energy_lakehouse` on `sys.path` (fallback: config key
-  `bundle.sourcePath`). Landing paths come from config keys `landing_path` (SMARD,
+  as dp`. `energy_lakehouse` comes from the wheel in the pipeline `environment.dependencies`
+  (`../dist/*.whl`); `root_path` is `../src/pipelines`, never `../src` (root_path is on
+  `sys.path` and would shadow the wheel). Landing paths come from config keys `landing_path` (SMARD,
   `${var.landing_root}/smard`) and `weather_landing_path` (`${var.landing_root}/weather`), the same
   for all targets; session time zone is
   UTC, local time is derived explicitly with `Europe/Berlin`. Keep Spark-free logic in
@@ -230,12 +233,10 @@ builds its own tables in its own schema.
     (`12_forecast_accuracy.py`: `gold_forecast_accuracy` per target and issue_date — n_hours, MAE,
     MAPE, baseline MAE/MAPE — via `INSERT OVERWRITE`). Both tables are plain Delta tables created
     `IF NOT EXISTS` from `GOLD_FORECAST_*_COLUMNS`.
-  - Libraries: only via job `environments` (`environment_key` on the notebook task; environment
-    `forecast` pins holidays/scikit-learn/mlflow, the same for training and scoring). Never
-    `%pip` or `restartPython` in notebooks, never install runtime-provided packages (numpy,
-    pandas, pyarrow, pyspark, ...); `tests/test_job_environments.py` enforces this. Locally
-    `scikit-learn` and `mlflow` are dev dependencies; `pandas`, `holidays` are package
-    dependencies.
+  - Libraries: only via job `environments` (see **Wheel**): environment `energy_lakehouse` =
+    the wheel plus exact pins of holidays/scikit-learn/mlflow (equal to `uv.lock`), identical in
+    `train_forecast_job` and `daily_refresh_job` so scoring unpickles the model with the training
+    versions.
 - **ML-assisted data quality (`anomalies.py`, notebooks 20–21):** pandas only, Spark-free. Every
   detector returns `ANOMALY_COLUMNS` (check_name, entity, ts_utc, value, expected, lower, upper,
   score ≥ 0, severity `critical`|`warning`, reason) for the last 7 days:
@@ -261,7 +262,7 @@ builds its own tables in its own schema.
     dates → warning (`forecast_drift_mae`); MAPE > 6 % on 2 consecutive dates → critical
     (`forecast_drift_mape`, load only). Empty input → no rows.
   - `daily_refresh_job`: … → `forecast_accuracy` → `detect_anomalies`
-    (`20_detect_anomalies.py`, environment `forecast`): fails if a scored input window is empty
+    (`20_detect_anomalies.py`, environment `energy_lakehouse`): fails if a scored input window is empty
     ("no silent success"), MERGEs into `gold_dq_anomalies` on (check_name, entity, ts_utc)
     (`detected_at` = latest run), writes `gold_dq_daily_summary` (every check × severity, n = 0
     included) with `INSERT INTO … REPLACE WHERE detection_date = …`, prints the summary, then
@@ -343,6 +344,26 @@ builds its own tables in its own schema.
   4. `uv run pytest`, commit the source JSON. `tests/test_dashboard.py`: the source SQL names
      only `workspace.energy_dev.` (never energy_staging/energy_prod, no other energy_dev form),
      each built file's SQL names only its own schema, every dataset is used by a widget.
+- **Wheel (`energy_lakehouse`):** `pyproject.toml` (hatchling) packages only
+  `src/energy_lakehouse` (no notebooks/pipelines). `[project].dependencies` are the runtime
+  dependencies (requests, pydantic, pyyaml, holidays, scikit-learn, mlflow); never list
+  runtime-provided packages (pyspark, databricks-connect, delta-spark, numpy, pandas, pyarrow).
+  Dev-only tools (pytest, ruff, pandas for local tests) go in `[dependency-groups].dev`.
+  - Build: `databricks.yml` `artifacts.energy_lakehouse` (`type: whl`, `path: .`,
+    `build: uv build --wheel --clear`, `dynamic_version: true`, files `dist/*.whl`). Every
+    `bundle deploy` builds it, uploads it and replaces `../dist/*.whl` in the resources with the
+    uploaded path; `--clear` keeps exactly one wheel in `dist/`, `dynamic_version` adds a
+    timestamp to the version so serverless never reuses a cached older wheel. Deploys need `uv`
+    (CI: `setup-uv` in `deploy-staging.yml` / `deploy-prod.yml`); `bundle validate` does not.
+  - Installed in: every job environment (`- ../dist/*.whl`; every notebook task that imports
+    `energy_lakehouse` has an `environment_key`) and the pipeline (`environment.dependencies`).
+    Job environments add only what the wheel cannot provide (exact ML pins).
+  - Notebooks and pipeline files import `energy_lakehouse` directly: no `sys.path` /
+    `os.path.abspath` manipulation, no `%pip` / `restartPython`. `tests/test_job_environments.py`
+    enforces all of this (wheel in every importing task and the pipeline, pins = `uv.lock`,
+    no runtime-provided packages, no sys.path markers).
+  - Package changes reach Databricks only through `bundle deploy` (a rebuilt wheel); editing
+    `src/energy_lakehouse/` in the workspace has no effect on jobs or the pipeline.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

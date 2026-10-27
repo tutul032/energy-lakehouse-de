@@ -13,8 +13,6 @@
 # COMMAND ----------
 
 import logging
-import os
-import sys
 
 import matplotlib.pyplot as plt
 import mlflow
@@ -23,9 +21,6 @@ from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse import forecast
 from energy_lakehouse.utils import table_name

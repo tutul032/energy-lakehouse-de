@@ -12,13 +12,8 @@
 
 # COMMAND ----------
 
-import os
-import sys
 
 import pandas as pd
-
-# Make src/ importable so the notebook reuses the tested package code.
-sys.path.append(os.path.abspath(".."))
 
 from energy_lakehouse import anomalies, forecast
 from energy_lakehouse.transforms import (

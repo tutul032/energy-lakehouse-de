@@ -162,6 +162,22 @@ def test_load_contracts_fails_on_empty_directory(tmp_path):
         contracts.load_contracts(tmp_path)
 
 
+def test_default_contracts_dir_falls_back_to_source_checkout():
+    # Tests import energy_lakehouse from src/ (no package data): the repo's contracts/ is used.
+    assert contracts.default_contracts_dir() == contracts.CONTRACTS_DIR
+    assert [c.table for c in contracts.load_contracts()] == [
+        c.table for c in contracts.load_contracts(contracts.CONTRACTS_DIR)
+    ]
+
+
+def test_load_contracts_accepts_str(tmp_path):
+    (tmp_path / "gold_energy_hourly.yaml").write_text(
+        (contracts.CONTRACTS_DIR / "gold_energy_hourly.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    assert [c.table for c in contracts.load_contracts(str(tmp_path))] == ["gold_energy_hourly"]
+
+
 @pytest.mark.parametrize(
     ("status", "enforced"),
     [("active", True), ("deprecated", True), ("draft", False), ("retired", False)],

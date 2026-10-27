@@ -14,6 +14,20 @@ workspace:
 include:
   - resources/*.yml
 
+# The energy_lakehouse package as a wheel, built from the repo root on every deploy and installed
+# in every job environment and the pipeline environment (resources/*.yml: ../dist/*.whl). The CLI
+# uploads it and replaces the local path. --clear drops stale wheels, so the glob matches exactly
+# one file; dynamic_version appends a timestamp to the version so serverless environments never
+# reuse a cached older build.
+artifacts:
+  energy_lakehouse:
+    type: whl
+    path: .
+    build: uv build --wheel --clear
+    dynamic_version: true
+    files:
+      - source: dist/*.whl
+
 variables:
   catalog:
     description: Unity Catalog catalog for all tables.
