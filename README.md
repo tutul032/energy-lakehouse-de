@@ -77,13 +77,13 @@ read the same raw files. Design decisions are recorded in [docs/adr/](docs/adr/)
 <!--
 Screenshots: add the files to docs/img/ and uncomment.
 
-![Dashboard: Market](docs/img/readme-dashboard-market.png)
-![Dashboard: Merit order](docs/img/readme-dashboard-merit-order.png)
-![Dashboard: Forecast](docs/img/readme-dashboard-forecast.png)
-![Dashboard: Data quality](docs/img/readme-dashboard-data-quality.png)
-![Genie agent](docs/img/readme-genie.png)
-![Lakeflow pipeline graph](docs/img/readme-pipeline-graph.png)
-![Approval-gated prod deploy](docs/img/readme-deploy-prod-approval.png)
+![Dashboard: Market](docs/img/market_page.jpg)
+![Dashboard: Merit order](docs/img/meritOrder_page.jpg)
+![Dashboard: Forecast](docs/img/forecast_page.jpg)
+![Dashboard: Data quality](docs/img/dataQuality_page.jpg)
+![Genie agent](docs/img/GenieAnswer.jpg)
+![Lakeflow pipeline graph](docs/img/Pipeline.jpg)
+![Approval-gated prod deploy](docs/img/deployProd.jpg)
 -->
 
 ## Tech stack
