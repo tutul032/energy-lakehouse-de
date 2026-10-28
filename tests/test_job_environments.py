@@ -5,8 +5,11 @@ resources/*.yml and checks:
 - every notebook task whose notebook imports energy_lakehouse (regex) has an `environment_key`
   whose dependencies install that wheel (`../dist/*.whl`, relative to the resource file), and
   tasks importing energy_lakehouse.forecast / .anomalies also pin holidays, scikit-learn and
-  mlflow exactly (the wheel only declares ranges; models are pickled at training and unpickled
-  at scoring with the same versions), equal to uv.lock;
+  mlflow exactly (the wheel's `ml` extra; the wheel only declares ranges and the bundle cannot
+  install an extra of a globbed wheel; models are pickled at training and unpickled at scoring
+  with the same versions), equal to uv.lock;
+- the base wheel dependencies stay small (the extractor Docker image installs only them) and the
+  `ml` extra is exactly the pinned package set;
 - the pipeline installs the same wheel in its serverless environment;
 - no notebook or pipeline file manipulates sys.path, installs packages itself (`%pip`,
   `restartPython`), and no job environment or wheel dependency is a library the serverless
@@ -27,7 +30,7 @@ WHEEL_GLOB = REPO_ROOT / "dist" / "*.whl"
 NOTEBOOK_INSTALL_MARKERS = ("%pip", "restartPython")
 SYS_PATH_MARKERS = ("sys.path", "os.path.abspath(", "bundle.sourcePath")
 REQUIRED_PACKAGES = {"holidays", "scikit-learn", "mlflow"}
-WHEEL_RUNTIME_PACKAGES = REQUIRED_PACKAGES | {"requests", "pydantic", "pyyaml"}
+WHEEL_BASE_PACKAGES = {"requests", "pydantic", "pyyaml"}
 FORBIDDEN_PACKAGES = {
     "pyspark",
     "databricks-connect",
@@ -254,10 +257,20 @@ def test_job_environments_skip_runtime_provided_packages():
 def test_wheel_dependencies():
     data = pyproject()
     assert data["build-system"]["build-backend"]
-    runtime = {package_name(r) for r in data["project"].get("dependencies", [])}
-    assert WHEEL_RUNTIME_PACKAGES <= runtime, f"missing {sorted(WHEEL_RUNTIME_PACKAGES - runtime)}"
-    forbidden = FORBIDDEN_PACKAGES & runtime
-    assert not forbidden, f"runtime-provided packages in [project] dependencies: {forbidden}"
+    base = {package_name(r) for r in data["project"].get("dependencies", [])}
+    assert base == WHEEL_BASE_PACKAGES, f"base dependencies {sorted(base)}"
+    extras = data["project"].get("optional-dependencies", {})
+    ml = {package_name(r) for r in extras.get("ml", [])}
+    assert ml == REQUIRED_PACKAGES, f"ml extra {sorted(ml)} != pinned {sorted(REQUIRED_PACKAGES)}"
+    for name, requirements in {"base": base, **extras}.items():
+        forbidden = FORBIDDEN_PACKAGES & {package_name(r) for r in requirements}
+        assert not forbidden, f"runtime-provided packages in {name} dependencies: {forbidden}"
+
+
+def test_dev_group_installs_ml_extra():
+    # `uv sync` (dev group) must bring the ml extra, or the forecast tests cannot import holidays.
+    dev = pyproject()["dependency-groups"]["dev"]
+    assert any(r.replace(" ", "") == "energy-lakehouse-de[ml]" for r in dev), dev
 
 
 def test_notebooks_do_not_install_packages():

@@ -10,21 +10,31 @@ readme = "README.md"
 # 3.11: serverless job environment_version "2" runs Python 3.11 (pip rejects the wheel
 # otherwise); the pipeline and local dev/CI use 3.12.
 requires-python = ">=3.11,<3.13"
-# Runtime dependencies of the wheel (installed with it in job environments and the pipeline).
+# Base runtime dependencies of the wheel: enough for the extractors (requests), contracts and
+# quality checks (pydantic, pyyaml). The extractor Docker image installs only these.
 # Never list packages the Databricks serverless runtime provides (pyspark, databricks-connect,
 # delta-spark, numpy, pandas, pyarrow): reinstalling them breaks Spark initialization.
 dependencies = [
-    "holidays>=0.60",
-    "mlflow>=2.16",
     "pydantic>=2.7",
     "pyyaml>=6",
     "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Forecasting/ML (energy_lakehouse.forecast, notebooks 10-12, 20). Databricks job environments
+# do not install the extra (`../dist/*.whl[ml]` is not a valid bundle glob); they pin exactly
+# these packages to the uv.lock versions next to the wheel (tests/test_job_environments.py).
+ml = [
+    "holidays>=0.60",
+    "mlflow>=2.16",
     "scikit-learn>=1.5",
 ]
 
 [dependency-groups]
 # Local only. pandas is provided by the Databricks runtime, so it is not a wheel dependency.
+# The project's own ml extra, so `uv sync` installs everything the tests need.
 dev = [
+    "energy-lakehouse-de[ml]",
     "pandas>=2.2",
     "pre-commit>=4.7.0",
     "pytest>=8",

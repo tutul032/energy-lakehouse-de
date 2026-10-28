@@ -8,6 +8,7 @@ Operational fixes for energy-lakehouse-de. Commands are PowerShell-compatible.
 - [Secret rotation](#secret-rotation)
 - [Dashboard modified remotely](#dashboard-modified-remotely)
 - [Release checklist](#release-checklist)
+- [Run the extractor in Docker](#run-the-extractor-in-docker)
 
 ## Daily refresh failed
 
@@ -179,7 +180,8 @@ edit in dev only.
 
 ## Release checklist
 
-1. **PR:** CI green (`ruff check`, `ruff format --check`, `pytest`, `bundle validate` staging/prod).
+1. **PR:** CI green: job `ci` (`ruff check`, `ruff format --check`, `pytest`, `bundle validate`
+   staging/prod) and job `docker` (hadolint, image build, smoke extract, Trivy).
    If a table changed: contract YAML + `transforms.py` in the same PR, `version` bumped,
    `uv run python scripts/render_contract_docs.py` run.
 2. **Merge to master:** `deploy-staging` deploys staging and runs `daily_refresh_job` end to end;
@@ -195,3 +197,59 @@ edit in dev only.
    shows the new day.
 8. **Draft contracts:** if a new table now has data, set its contract to `status: active` (PATCH
    bump) in a follow-up PR.
+
+## Run the extractor in Docker
+
+The image (`Dockerfile`) runs only the extractor (`energy_lakehouse.extract_local`) and writes
+raw JSON to `/data`. It holds no Databricks credentials and uploads nothing; uploading stays in
+`scripts/sync_landing.ps1` / `sync_landing.sh`. Run from the repo root in PowerShell with Docker
+Desktop running.
+
+**1. Build.**
+
+```powershell
+docker build -t energy-extractor:dev --build-arg REVISION=$(git rev-parse HEAD) .
+docker image ls energy-extractor:dev     # about 200 MB
+```
+
+**2. Check the CLI.** The ENTRYPOINT is the extractor, so options go straight after the image.
+
+```powershell
+docker run --rm energy-extractor:dev --help
+```
+
+**3. Extract into the local landing folder**, then upload as usual. The default command is
+`--source all`; every option of `extract_local` works (`--weeks`, `--past-days`, `--mode
+archive --start --end`, `--overwrite`, ...). `--out` defaults to `/data` in the container.
+
+```powershell
+New-Item -ItemType Directory -Force data/landing | Out-Null
+docker run --rm -v "${PWD}/data/landing:/data" energy-extractor:dev --source all --weeks 8
+"exit code: $LASTEXITCODE"               # 1 if any file failed (see the FAILED log lines)
+.\scripts\sync_landing.ps1
+```
+
+Small test run into a throwaway folder:
+
+```powershell
+$out = Join-Path $env:TEMP "extract_test"
+New-Item -ItemType Directory -Force $out | Out-Null
+docker run --rm -v "${out}:/data" energy-extractor:dev --weeks 1 --refresh-latest 1 --past-days 1
+(Get-ChildItem $out -Recurse -Filter *.json).Count   # > 0
+```
+
+**4. Lint and scan** (the same checks as the CI `docker` job):
+
+```powershell
+docker run --rm -v "${PWD}:/work:ro" -w /work ghcr.io/hadolint/hadolint:v2.15.0 hadolint Dockerfile
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/aquasecurity/trivy:0.73.0 image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 energy-extractor:dev
+```
+
+**Troubleshooting**
+
+| Symptom | Fix |
+|---|---|
+| `429 Too Many Requests` from `registry-1.docker.io` during build | Docker Hub rate limit. Build with `--build-arg PYTHON_IMAGE=mirror.gcr.io/library/python:3.12.16-slim-trixie` (same tag as the Dockerfile), or `docker login`. |
+| `Permission denied` writing `/data/...` (Linux host) | The container runs as uid 10001. Make the bind-mounted folder writable for it (`chmod 0777 <dir>`) or pass `--user "$(id -u):$(id -g)"`. Docker Desktop on Windows is not affected. |
+| Trivy fails on a CRITICAL in a Python package | `uv lock --upgrade-package <name>`, rebuild, rescan, commit `uv.lock`. In the base OS: bump the patch tag of `PYTHON_IMAGE`. |
+| Exit code 1, `FAILED` lines in the log | An API call failed after 3 tries. Rerun; existing files are skipped. |

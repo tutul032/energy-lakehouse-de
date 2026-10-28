@@ -1,0 +1,25 @@
+# Allow-list friendly build context: the Dockerfile copies only pyproject.toml, uv.lock,
+# README.md, src/energy_lakehouse and contracts. Everything else stays out of the context.
+.git
+.github
+.venv
+.databricks
+.env
+.env.*
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.py[cod]
+dist
+build
+data
+landing
+tests
+docs
+scripts
+resources
+src/notebooks
+src/pipelines
+src/*.lvdash.json
+*.md
+!README.md

@@ -35,6 +35,28 @@ def fake_extractors(monkeypatch, smard_result=OK, weather_result=OK):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def no_out_env(monkeypatch):
+    monkeypatch.delenv(extract_local.OUT_ENV_VAR, raising=False)
+
+
+def test_default_out(monkeypatch):
+    assert extract_local.default_out() == "data/landing"
+    monkeypatch.setenv("EXTRACT_OUT", "")
+    assert extract_local.default_out() == "data/landing"
+    monkeypatch.setenv("EXTRACT_OUT", "/data")
+    assert extract_local.default_out() == "/data"
+
+
+def test_main_out_defaults_to_env(monkeypatch):
+    calls = fake_extractors(monkeypatch)
+    monkeypatch.setenv("EXTRACT_OUT", "/data")
+    assert extract_local.main(["--source", "smard"]) == 0
+    assert calls["smard"]["base_dir"] == "/data"
+    assert extract_local.main(["--source", "weather", "--out", "elsewhere"]) == 0
+    assert calls["weather"]["base_dir"] == "elsewhere"
+
+
 def test_main_default_runs_both_sources(monkeypatch):
     calls = fake_extractors(monkeypatch)
     assert extract_local.main(["--out", "x/landing", "--weeks", "3"]) == 0
@@ -66,6 +88,11 @@ def test_main_source_weather_only_with_past_days(monkeypatch):
 def test_main_nonzero_on_failures(monkeypatch):
     fake_extractors(monkeypatch, weather_result={"written": 0, "skipped": 0, "failed": 2})
     assert extract_local.main([]) == 1
+
+
+def test_main_nonzero_on_smard_failures_only(monkeypatch):
+    fake_extractors(monkeypatch, smard_result={"written": 5, "skipped": 0, "failed": 1})
+    assert extract_local.main(["--source", "smard"]) == 1
 
 
 def test_main_weather_archive_mode(monkeypatch):

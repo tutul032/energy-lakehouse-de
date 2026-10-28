@@ -4,10 +4,14 @@ uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8
 uv run python -m energy_lakehouse.extract_local --source weather
 uv run python -m energy_lakehouse.extract_local --source weather --mode archive
     --start 2026-08-01 --end 2026-10-15     (one command; archive backfill)
+
+--out defaults to $EXTRACT_OUT if set (the Docker image sets /data), else data/landing.
+Exit code 1 if any file failed.
 """
 
 import argparse
 import logging
+import os
 import sys
 from datetime import date
 
@@ -17,12 +21,23 @@ from energy_lakehouse.weather_config import DEFAULT_PAST_DAYS, LOCATIONS
 
 SOURCES = ("smard", "weather", "all")
 WEATHER_MODES = ("daily", "archive")
+OUT_ENV_VAR = "EXTRACT_OUT"
+DEFAULT_OUT = "data/landing"
+
+
+def default_out() -> str:
+    """Landing base directory: $EXTRACT_OUT if set and non-empty, else data/landing."""
+    return os.environ.get(OUT_ENV_VAR) or DEFAULT_OUT
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Download raw SMARD/weather data locally.")
     parser.add_argument("--source", choices=SOURCES, default="all", help="which extractor(s)")
-    parser.add_argument("--out", default="data/landing", help="landing base directory")
+    parser.add_argument(
+        "--out",
+        default=default_out(),
+        help=f"landing base directory (default: ${OUT_ENV_VAR} or {DEFAULT_OUT})",
+    )
     parser.add_argument("--weeks", type=int, default=8, help="SMARD: latest weekly chunks")
     parser.add_argument("--resolution", default=DEFAULT_RESOLUTION, help="SMARD resolution")
     parser.add_argument(
