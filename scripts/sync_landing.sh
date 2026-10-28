@@ -7,8 +7,9 @@
 # DATABRICKS_CONFIG_PROFILE=free instead.
 #
 # Settings (env, optional): LANDING_ROOT (/Volumes/workspace/energy_raw/landing, shared by all
-# targets; must already exist), LOCAL_DIR (data/landing), SMARD_WEEKS (8), PAST_DAYS (7).
-# The extractor log goes to $LOCAL_DIR/logs/.
+# targets; must already exist), LOCAL_DIR (data/landing), SMARD_WEEKS (8), PAST_DAYS (7),
+# SKIP_EXTRACT (unset; 1 = only check, upload and verify LOCAL_DIR, filled by another step, e.g.
+# the extractor container in daily-refresh.yml). The extractor log goes to $LOCAL_DIR/logs/.
 #
 # Weather runs in daily mode: forecast API with PAST_DAYS back + today + 2 days, one new
 # run_ts=<yyyymmddThhmmZ>.json file per run, so the newest file holds the day-ahead forecast.
@@ -28,6 +29,7 @@ LANDING_ROOT="${LANDING_ROOT:-/Volumes/workspace/energy_raw/landing}"
 LOCAL_DIR="${LOCAL_DIR:-data/landing}"
 SMARD_WEEKS="${SMARD_WEEKS:-8}"
 PAST_DAYS="${PAST_DAYS:-7}"
+SKIP_EXTRACT="${SKIP_EXTRACT:-}"
 SOURCES=(smard weather)
 
 fail() {
@@ -47,7 +49,7 @@ dbx() {
 }
 
 command -v databricks >/dev/null || fail "databricks CLI not found on PATH."
-command -v uv >/dev/null || fail "uv not found on PATH."
+[[ "${SKIP_EXTRACT}" == "1" ]] || command -v uv >/dev/null || fail "uv not found on PATH."
 if [[ -z "${DATABRICKS_CONFIG_PROFILE:-}" ]]; then
   for var in DATABRICKS_HOST DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET; do
     [[ -n "${!var:-}" ]] || fail "env var $var is not set."
@@ -58,11 +60,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 volume_base="dbfs:${LANDING_ROOT%/}"
 
 # 1. Extract (both sources). pipefail makes a failed extractor fail the script despite tee.
-mkdir -p "${LOCAL_DIR}/logs"
-log_file="${LOCAL_DIR}/logs/extract_$(date -u +%Y%m%dT%H%M%SZ).log"
-echo "extract: weeks=${SMARD_WEEKS} past_days=${PAST_DAYS} -> ${LOCAL_DIR} (log ${log_file})"
-uv run python -m energy_lakehouse.extract_local --source all --out "${LOCAL_DIR}" \
-  --weeks "${SMARD_WEEKS}" --past-days "${PAST_DAYS}" 2>&1 | tee "${log_file}"
+if [[ "${SKIP_EXTRACT}" == "1" ]]; then
+  echo "extract: skipped (SKIP_EXTRACT=1), uploading ${LOCAL_DIR}"
+else
+  mkdir -p "${LOCAL_DIR}/logs"
+  log_file="${LOCAL_DIR}/logs/extract_$(date -u +%Y%m%dT%H%M%SZ).log"
+  echo "extract: weeks=${SMARD_WEEKS} past_days=${PAST_DAYS} -> ${LOCAL_DIR} (log ${log_file})"
+  uv run python -m energy_lakehouse.extract_local --source all --out "${LOCAL_DIR}" \
+    --weeks "${SMARD_WEEKS}" --past-days "${PAST_DAYS}" 2>&1 | tee "${log_file}"
+fi
 
 # 2. Check every local source before uploading anything.
 for source in "${SOURCES[@]}"; do

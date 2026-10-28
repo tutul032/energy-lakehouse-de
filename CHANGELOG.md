@@ -12,7 +12,14 @@ release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after
   ci.yml job `docker` (hadolint, build, smoke extract, Trivy); `extract_local --out` defaults to
   `$EXTRACT_OUT`.
 
+- `deploy-prod.yml`: `publish-image` (build, Trivy, push `energy-extractor:<tag>` and
+  `:sha-<short sha>` to GHCR) before the approval, `promote-image` (retag the digest as `:prod`)
+  after the deploy. Runbook: which image prod ran, extractor rollback.
+
 ### Changed
+- `daily-refresh.yml` extracts with the `energy-extractor:prod` container (digest logged; no
+  Databricks credentials in the container, DATABRICKS_* only on the upload/job steps);
+  `sync_landing.sh` gains `SKIP_EXTRACT=1`; permissions `contents: read`, `packages: read`.
 - Wheel dependencies: base = requests, pydantic, pyyaml; holidays, scikit-learn, mlflow moved to
   the `ml` extra (job environments keep their exact pins). certifi 2026.10.23 (GHSA-6q48-6c7w-9gw2).
 

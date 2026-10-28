@@ -4,6 +4,9 @@ name: daily-refresh
 # shared landing volume /Volumes/workspace/energy_raw/landing and triggers the PROD
 # daily_refresh_job (repo variable DATABRICKS_JOB_ID = prod job id). Auth: refresh service
 # principal OAuth secret (M2M); OIDC federation needs account-level APIs, which Free Edition lacks.
+# Extraction runs the released extractor image ghcr.io/<owner>/energy-extractor:prod (promoted by
+# deploy-prod.yml), pinned to the digest pulled at the start of the run. The container gets no
+# Databricks credentials: only the upload and job-run steps see the DATABRICKS_* variables.
 on:
   schedule:
     - cron: "17 5 * * *" # 05:17 UTC daily
@@ -15,29 +18,70 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      DATABRICKS_JOB_ID: ${{ vars.DATABRICKS_JOB_ID }} # prod daily_refresh_job
       LANDING_ROOT: /Volumes/workspace/energy_raw/landing
+      SMARD_WEEKS: "8"
+      PAST_DAYS: "7"
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-      - run: uv sync --locked
       - uses: databricks/setup-cli@main
 
-      - name: Extract and upload landing files
+      # GHCR image names must be lowercase. LOCAL_DIR is outside the checkout.
+      - name: Prepare landing folder
+        run: |
+          set -euo pipefail
+          {
+            echo "LOCAL_DIR=${RUNNER_TEMP}/landing"
+            echo "EXTRACTOR_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/energy-extractor:prod"
+          } >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/landing/logs"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Pull extractor image and log its digest
+        run: |
+          set -euo pipefail
+          docker pull "${EXTRACTOR_IMAGE}"
+          ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "${EXTRACTOR_IMAGE}")"
+          version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${EXTRACTOR_IMAGE}")"
+          revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${EXTRACTOR_IMAGE}")"
+          echo "extractor: ${EXTRACTOR_IMAGE} = ${ref} (version ${version}, revision ${revision})"
+          echo "Extractor: \`${EXTRACTOR_IMAGE}\` = \`${ref}\`, version \`${version}\`, revision \`${revision}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "EXTRACTOR_REF=${ref}" >> "$GITHUB_ENV"
+
+      # Runs as the runner user so the upload step can read/overwrite the files. pipefail makes a
+      # failed extractor (exit 1 if any file failed) fail the step despite tee.
+      - name: Extract landing files (container)
+        run: |
+          set -euo pipefail
+          log_file="${LOCAL_DIR}/logs/extract_$(date -u +%Y%m%dT%H%M%SZ).log"
+          docker run --rm --pull never --user "$(id -u):$(id -g)" -v "${LOCAL_DIR}:/data" \
+            "${EXTRACTOR_REF}" --source all --out /data \
+            --weeks "${SMARD_WEEKS}" --past-days "${PAST_DAYS}" 2>&1 | tee "${log_file}"
+
+      - name: Upload landing files
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          SKIP_EXTRACT: "1"
         run: bash scripts/sync_landing.sh
 
       - name: Run prod daily_refresh_job and wait
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_JOB_ID: ${{ vars.DATABRICKS_JOB_ID }} # prod daily_refresh_job
         run: |
           set -euo pipefail
           [[ -n "${DATABRICKS_JOB_ID}" ]] || { echo "FAILED: repo variable DATABRICKS_JOB_ID is not set" >&2; exit 1; }
@@ -54,6 +98,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: extract-logs-${{ github.run_id }}
-          path: data/landing/logs/
+          path: ${{ runner.temp }}/landing/logs/
           if-no-files-found: warn
           retention-days: 14

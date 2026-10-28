@@ -9,17 +9,20 @@ Operational fixes for energy-lakehouse-de. Commands are PowerShell-compatible.
 - [Dashboard modified remotely](#dashboard-modified-remotely)
 - [Release checklist](#release-checklist)
 - [Run the extractor in Docker](#run-the-extractor-in-docker)
+- [Extractor image in prod](#extractor-image-in-prod)
 
 ## Daily refresh failed
 
-The `daily-refresh` workflow (05:17 UTC) extracts, uploads and then runs the prod
-`daily_refresh_job`. A failure email goes to `alert_email`, and the workflow run turns red.
+The `daily-refresh` workflow (05:17 UTC) extracts (extractor image
+`ghcr.io/<owner>/energy-extractor:prod`), uploads and then runs the prod `daily_refresh_job`. A failure email goes to `alert_email`, and the workflow run turns red.
 
 **1. Find the failed step in GitHub.** *Actions → daily-refresh → the red run*:
 
 | Failed step | Meaning |
 |---|---|
-| `Extract and upload landing files` | `scripts/sync_landing.sh` stopped: an API call failed after 3 tries, or `databricks fs cp` / the listing check failed. The log names the step (`FAILED: ...`). |
+| `Log in to GHCR` / `Pull extractor image and log its digest` | `:prod` does not exist yet (no release promoted), or the repository lost read access to the package. See [Extractor image in prod](#extractor-image-in-prod). |
+| `Extract landing files (container)` | The extractor exited 1: an API call failed after 3 tries (`FAILED` lines in the log). Rerun; existing files are skipped. |
+| `Upload landing files` | `scripts/sync_landing.sh` (`SKIP_EXTRACT=1`) stopped: a source folder is empty, or `databricks fs cp` / the listing check failed. The log names the step (`FAILED: ...`). |
 | `Run prod daily_refresh_job and wait` | The Databricks job failed (or `DATABRICKS_JOB_ID` is not set). The log prints `run: <run_page_url>` and `result: <state>`. |
 
 **2. Find the first failed task.** Open the `run_page_url` (graph view), or use the CLI. The
@@ -37,7 +40,7 @@ databricks jobs get-run-output <task-run-id> -p free    # error message and trac
 | Task | Typical cause | Fix |
 |---|---|---|
 | `run_pipeline` | Expectation `valid_timestamp` failed (malformed landing file); missing `READ VOLUME` for the job's run-as identity on the landing volume. | Find the file in the pipeline event log, move it out of the landing volume, rerun. Re-grant `READ VOLUME`. |
-| `quality_checks` | `gold_energy_hourly` older than 72 h (extraction stopped, or SMARD published late); no weather in the last 7 days; an empty silver table. | Check the extract step and `data/landing/logs` (workflow artifact). If SMARD is late, wait for the next run. |
+| `quality_checks` | `gold_energy_hourly` older than 72 h (extraction stopped, or SMARD published late); no weather in the last 7 days; an empty silver table. | Check the extract step and the `extract-logs-<run id>` workflow artifact. If SMARD is late, wait for the next run. |
 | `apply_contracts` | A consumer group in a contract (e.g. `energy-consumers`) does not exist, so `GRANT` fails. | Create the group in the workspace, or remove it from the contract (PATCH bump). |
 | `verify_contracts` | Schema drift, a quality rule above its allowed violation %, or freshness SLA missed. The task lists every failure. | Schema: fix the pipeline or the contract (ADR 0005). Freshness: same as `quality_checks`. |
 | `score_forecast` | Fewer than 23 forecast rows for a target with a champion (e.g. no weather forecast for D+1). Targets without a champion are skipped with a warning, not failed. | Check `gold_weather_forecast_hourly` for D+1 and the weather upload. |
@@ -189,9 +192,12 @@ edit in dev only.
 3. **Check staging:** dashboard `[staging] Energy Market DE` loads; no unexpected critical rows in
    `workspace.energy_staging.gold_dq_anomalies`.
 4. **CHANGELOG:** add the release section to `CHANGELOG.md` (merged PRs, notable changes).
-5. **Release:** create the GitHub release with tag `vX.Y.Z` (semver) from master.
+5. **Release:** create the GitHub release with tag `vX.Y.Z` (semver) from master. `deploy-prod`
+   job `publish-image` builds, scans and pushes `energy-extractor:vX.Y.Z` and `:sha-<short sha>`
+   before the approval; a fixable CRITICAL fails the release here.
 6. **Approve:** `deploy-prod` waits for the `production` environment approval; approve, then check
-   the bundle summary in the run log. A "modified remotely" failure: see
+   the bundle summary in the run log. `promote-image` then moves `:prod` to the release digest
+   (see the run summary). A "modified remotely" failure: see
    [Dashboard modified remotely](#dashboard-modified-remotely).
 7. **After deploy:** the next `daily-refresh` run (or *Run workflow*) is green; the prod dashboard
    shows the new day.
@@ -253,3 +259,53 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/aquasecurit
 | `Permission denied` writing `/data/...` (Linux host) | The container runs as uid 10001. Make the bind-mounted folder writable for it (`chmod 0777 <dir>`) or pass `--user "$(id -u):$(id -g)"`. Docker Desktop on Windows is not affected. |
 | Trivy fails on a CRITICAL in a Python package | `uv lock --upgrade-package <name>`, rebuild, rescan, commit `uv.lock`. In the base OS: bump the patch tag of `PYTHON_IMAGE`. |
 | Exit code 1, `FAILED` lines in the log | An API call failed after 3 tries. Rerun; existing files are skipped. |
+
+## Extractor image in prod
+
+`deploy-prod` publishes `ghcr.io/<owner>/energy-extractor:<tag>` (plus `:sha-<short sha>`) and,
+only after a successful prod bundle deploy, points `:prod` at the same digest. `daily-refresh`
+pulls `:prod`, logs the digest and labels, and runs that digest. Version tags are never
+overwritten: rerunning `deploy-prod` for a published tag reuses its digest.
+
+**Which image did prod run?** Open the `daily-refresh` run: the summary (and the step *Pull
+extractor image and log its digest*) shows `ghcr.io/...@sha256:...`, the version label (= the
+release tag) and the git revision. From the CLI:
+
+```powershell
+gh run list --workflow daily-refresh.yml --limit 5
+gh run view <run-id> --log | Select-String "extractor:"
+```
+
+**Which version is `:prod` now?** Compare digests (any authenticated `docker login ghcr.io`,
+see below):
+
+```powershell
+$image = "ghcr.io/tutul032/energy-extractor"
+docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+```
+
+Or *GitHub → your profile → Packages → energy-extractor*: each version lists its tags.
+
+**Roll back the extractor only** (bundle stays as deployed): retag `:prod` to the digest of an
+older version tag. No rebuild; the next `daily-refresh` run uses it.
+
+```powershell
+gh auth refresh -s write:packages                  # once: token scope for pushing tags
+gh auth token | docker login ghcr.io -u tutul032 --password-stdin
+$image = "ghcr.io/tutul032/energy-extractor"
+$digest = docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+if ($LASTEXITCODE -ne 0) { throw "tag v0.7.0 not found" }
+docker buildx imagetools create --tag "${image}:prod" "${image}@${digest}"
+docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'   # = $digest
+docker logout ghcr.io
+```
+
+**Roll back everything** (bundle + image): *Actions → deploy-prod → Run workflow* with the older
+tag. `publish-image` reuses that tag's digest, `deploy` redeploys that code after approval, and
+`promote-image` moves `:prod` back. A later release moves `:prod` forward again.
+
+**Package access.** The first publish creates the package (private). Actions publishing with
+`GITHUB_TOKEN` gives this repository access; check *Package settings → Manage Actions access*
+lists `energy-lakehouse-de` (Read is enough for `daily-refresh`, Write for `deploy-prod`). A
+`denied` / `unauthorized` on pull means this entry is missing.
