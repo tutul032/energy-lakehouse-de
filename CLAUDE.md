@@ -14,6 +14,8 @@ Portfolio project: German energy data engineering on Databricks.
 ## Folder layout
 ```
 databricks.yml              # bundle root: variables, whl artifact (energy_lakehouse), targets
+Dockerfile                  # extractor image (multi-stage: uv builds wheel; python slim, user app)
+.dockerignore               # build context = pyproject.toml, uv.lock, README.md, package, contracts
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
   energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
 src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel, see "Wheel")
@@ -69,7 +71,8 @@ docs/adr/                   # architecture decision records (NNNN-title.md)
 docs/tutorial/              # step-by-step labs (labN-*.md)
 docs/img/                   # screenshots: labN-stepNN-name.png
 docs/data-products/         # generated data product pages (one per contract; do not hand-edit)
-.github/workflows/ci.yml    # PR + push master (+ workflow_call): lint, test, bundle validate staging/prod
+.github/workflows/ci.yml    # PR + push master (+ workflow_call): job ci (lint, test, bundle validate
+                            #   staging/prod) + job docker (hadolint, build, smoke extract, Trivy)
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
 .github/workflows/deploy-prod.yml    # release v*: env production (approval) -> deploy prod -> summary
 .github/workflows/daily-refresh.yml  # 05:17 UTC: sync_landing.sh, then jobs run-now prod daily_refresh_job
@@ -110,6 +113,13 @@ databricks bundle run train_forecast_job -t dev -p free                # train b
 databricks bundle destroy  -t dev -p free  # tear down dev resources
 databricks bundle validate -t staging -p free   # validate only; staging/prod deploy via CI
 databricks bundle validate -t prod    -p free
+
+# Extractor image (extract only, no Databricks credentials; upload stays in the workflow)
+docker build -t energy-extractor:dev --build-arg REVISION=$(git rev-parse HEAD) .
+docker run --rm energy-extractor:dev --help
+docker run --rm -v "${PWD}/data/landing:/data" energy-extractor:dev --source all --weeks 8
+docker run --rm -v "${PWD}:/work:ro" -w /work ghcr.io/hadolint/hadolint:v2.15.0 hadolint Dockerfile
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/aquasecurity/trivy:0.73.0 image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 energy-extractor:dev
 ```
 
 ## Environments
@@ -345,10 +355,16 @@ builds its own tables in its own schema.
      only `workspace.energy_dev.` (never energy_staging/energy_prod, no other energy_dev form),
      each built file's SQL names only its own schema, every dataset is used by a widget.
 - **Wheel (`energy_lakehouse`):** `pyproject.toml` (hatchling) packages only
-  `src/energy_lakehouse` (no notebooks/pipelines). `[project].dependencies` are the runtime
-  dependencies (requests, pydantic, pyyaml, holidays, scikit-learn, mlflow); never list
+  `src/energy_lakehouse` (no notebooks/pipelines). `[project].dependencies` are the base runtime
+  dependencies (requests, pydantic, pyyaml: extractors, contracts, quality); the extra `ml`
+  (`[project.optional-dependencies]`) holds holidays, scikit-learn, mlflow. Never list
   runtime-provided packages (pyspark, databricks-connect, delta-spark, numpy, pandas, pyarrow).
-  Dev-only tools (pytest, ruff, pandas for local tests) go in `[dependency-groups].dev`.
+  Dev-only tools (pytest, ruff, pandas for local tests) go in `[dependency-groups].dev`, which
+  also pulls `energy-lakehouse-de[ml]`, so `uv sync` installs the extra.
+  - Job environments never install `[ml]` (`../dist/*.whl[ml]` is no valid bundle glob); they pin
+    exactly the `ml` packages to the `uv.lock` versions next to the wheel (enforced by
+    `tests/test_job_environments.py`). Adding an ML library = add it to `ml` and pin it in both
+    the train and the daily refresh environments.
   - Build: `databricks.yml` `artifacts.energy_lakehouse` (`type: whl`, `path: .`,
     `build: uv build --wheel --clear`, `dynamic_version: true`, files `dist/*.whl`). Every
     `bundle deploy` builds it, uploads it and replaces `../dist/*.whl` in the resources with the
@@ -364,6 +380,19 @@ builds its own tables in its own schema.
     no runtime-provided packages, no sys.path markers).
   - Package changes reach Databricks only through `bundle deploy` (a rebuilt wheel); editing
     `src/energy_lakehouse/` in the workspace has no effect on jobs or the pipeline.
+- **Extractor image (`Dockerfile`):** extraction only (`energy_lakehouse.extract_local` as
+  ENTRYPOINT, default `--source all`). Builder stage (`ghcr.io/astral-sh/uv`, pinned) builds the
+  wheel and `uv export --frozen --no-dev --no-emit-project` (base deps with hashes); runtime
+  `python:3.12.<patch>-slim-trixie` installs them `--require-hashes`, then the wheel `--no-deps`
+  (no ml extra; ~200 MB unpacked, target < 300 MB). `USER 10001:10001` ("app"), `WORKDIR /app`,
+  `VOLUME /data`, `ENV EXTRACT_OUT=/data` (`--out` default: `$EXTRACT_OUT`, else
+  `data/landing`); OCI labels source/version/revision via `--build-arg VERSION/REVISION`. Exit
+  code 1 if any file failed. Never COPY the repo root, `.env` or `.databricks`; never put
+  Databricks credentials in the image. Bind mounts on Linux: the folder must be writable by uid
+  10001 (CI: `chmod 0777` on the temp dir). Docker Hub rate limit (429): build with
+  `--build-arg PYTHON_IMAGE=mirror.gcr.io/library/python:<same tag>`. `tests/test_docker.py`
+  checks non-root USER, pinned FROMs, no `ADD http`, no repo-wide COPY, `.dockerignore`.
+  Trivy CRITICAL with a fix in a Python dependency → `uv lock --upgrade-package <name>`.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

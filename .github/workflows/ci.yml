@@ -35,3 +35,47 @@ jobs:
         run: databricks bundle validate -t staging
       - name: Validate bundle (prod)
         run: databricks bundle validate -t prod
+
+  # Extractor image (Dockerfile): lint, build, smoke-test, scan. No Databricks secrets: the
+  # container only extracts to a local folder; uploading stays in daily-refresh.yml.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: energy-extractor:ci
+      HADOLINT_IMAGE: ghcr.io/hadolint/hadolint:v2.15.0
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.73.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint Dockerfile (hadolint)
+        run: docker run --rm -i "${HADOLINT_IMAGE}" < Dockerfile
+      - name: Build image
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          docker build -t "${IMAGE}" --build-arg VERSION="${version}" --build-arg REVISION="${GITHUB_SHA}" .
+          docker image ls "${IMAGE}"
+      - name: Check image (non-root, no Databricks env, --help)
+        run: |
+          set -euo pipefail
+          uid="$(docker run --rm --entrypoint id "${IMAGE}" -u)"
+          [[ "${uid}" != "0" ]] || { echo "FAILED: image runs as root" >&2; exit 1; }
+          if docker image inspect "${IMAGE}" --format '{{json .Config.Env}}' | grep -qi databricks; then
+            echo "FAILED: image environment mentions DATABRICKS" >&2; exit 1
+          fi
+          docker run --rm "${IMAGE}" --help
+      - name: Smoke test (real 1-chunk extract into a temp folder)
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          chmod 0777 "${out}" # the container writes as its own non-root uid
+          docker run --rm -v "${out}:/data" "${IMAGE}" \
+            --source all --weeks 1 --refresh-latest 1 --past-days 1
+          for source in smard weather; do
+            n="$(find "${out}/${source}" -type f -name '*.json' | wc -l)"
+            echo "${source}: ${n} files"
+            [[ "${n}" -gt 0 ]] || { echo "FAILED: no ${source} files in ${out}" >&2; exit 1; }
+          done
+      - name: Scan image (Trivy, fail on fixable CRITICAL)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "${TRIVY_IMAGE}" \
+            image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE}"

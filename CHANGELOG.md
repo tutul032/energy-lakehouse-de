@@ -8,6 +8,13 @@ release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after
 ### Added
 - Portfolio documentation: README, ADRs 0002–0009, runbook (failed refresh, safe rerun, DST,
   secret rotation, release checklist), tutorial index, this changelog.
+- Extractor Docker image (`Dockerfile`, `.dockerignore`): multi-stage, non-root, extract-only;
+  ci.yml job `docker` (hadolint, build, smoke extract, Trivy); `extract_local --out` defaults to
+  `$EXTRACT_OUT`.
+
+### Changed
+- Wheel dependencies: base = requests, pydantic, pyyaml; holidays, scikit-learn, mlflow moved to
+  the `ml` extra (job environments keep their exact pins). certifi 2026.10.23 (GHSA-6q48-6c7w-9gw2).
 
 ## [v0.6.1] - 2026-10-27 — prod dashboard drift handling
 
