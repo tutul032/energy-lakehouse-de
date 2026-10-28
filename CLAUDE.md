@@ -64,7 +64,7 @@ scripts/render_contract_docs.py # contracts/*.yaml -> docs/data-products/<table>
 scripts/build_dashboard.py  # src dashboard -> build/energy_market_de.<target>.lvdash.json (--target)
 build/                      # built dashboard files (gitignored)
 dist/                       # built energy_lakehouse wheel (uv build --wheel; gitignored)
-scripts/sync_landing.sh     # bash: extract all + fs cp -r --overwrite + verify (env-var auth, CI)
+scripts/sync_landing.sh     # bash: extract all (SKIP_EXTRACT=1: skip) + fs cp -r --overwrite + verify
 tests/                      # pytest tests for src/energy_lakehouse (offline; fixtures/ for samples)
 data/                       # local landing output (gitignored)
 docs/adr/                   # architecture decision records (NNNN-title.md)
@@ -74,8 +74,11 @@ docs/data-products/         # generated data product pages (one per contract; do
 .github/workflows/ci.yml    # PR + push master (+ workflow_call): job ci (lint, test, bundle validate
                             #   staging/prod) + job docker (hadolint, build, smoke extract, Trivy)
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
-.github/workflows/deploy-prod.yml    # release v*: env production (approval) -> deploy prod -> summary
-.github/workflows/daily-refresh.yml  # 05:17 UTC: sync_landing.sh, then jobs run-now prod daily_refresh_job
+.github/workflows/deploy-prod.yml    # release v*: publish-image (build, Trivy, push :<tag>/:sha-<sha>)
+                                     #   -> deploy (env production approval) -> promote-image (:prod)
+.github/workflows/daily-refresh.yml  # 05:17 UTC: docker run energy-extractor:prod, sync_landing.sh
+                                     #   (SKIP_EXTRACT=1), then jobs run-now prod daily_refresh_job
+tests/test_workflows.py              # deploy-prod job order/permissions, daily-refresh image + no secrets
 ```
 
 ## Local setup
@@ -287,11 +290,16 @@ builds its own tables in its own schema.
     `gold_dq_daily_summary_text` (model, prompt, prompt_chars; no contract); any error is a
     warning, never a failure.
 - **Daily refresh:** Free Edition has no outbound internet and no account-level APIs (no OIDC
-  federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner, uploads with
-  `scripts/sync_landing.sh` and runs `databricks jobs run-now <vars.DATABRICKS_JOB_ID>`
+  federation policy), so `.github/workflows/daily-refresh.yml` extracts on the runner with the
+  extractor image `ghcr.io/<owner>/energy-extractor:prod` (pulled, digest + version label logged,
+  run by digest as the runner user, `$RUNNER_TEMP/landing` mounted at `/data`, `--source all
+  --weeks 8 --past-days 7`), uploads with `SKIP_EXTRACT=1 scripts/sync_landing.sh` and runs
+  `databricks jobs run-now <vars.DATABRICKS_JOB_ID>`
   (checks `result_state`, since run-now exits 0 on a FAILED run). Auth: service principal OAuth
   secret (M2M) via GitHub secrets `DATABRICKS_HOST` / `DATABRICKS_CLIENT_ID` /
-  `DATABRICKS_CLIENT_SECRET`; no `-p` flag in CI. `daily_refresh_job` (no schedule): `run_pipeline`
+  `DATABRICKS_CLIENT_SECRET`, set only on the upload and job-run steps (never job-level, never
+  passed to the container); permissions `contents: read`, `packages: read`; no `-p` flag in CI.
+  `daily_refresh_job` (no schedule): `run_pipeline`
   (energy_pipeline, `full_refresh: false`) → `quality_checks` (`03_quality_checks.py`, gets
   `catalog`/`schema` from the job parameters via `base_parameters`); fails on
   gold_energy_hourly older than 72 h, no weather in gold_energy_weather_hourly in the last 7 days,
@@ -380,6 +388,15 @@ builds its own tables in its own schema.
     no runtime-provided packages, no sys.path markers).
   - Package changes reach Databricks only through `bundle deploy` (a rebuilt wheel); editing
     `src/energy_lakehouse/` in the workspace has no effect on jobs or the pipeline.
+- **Extractor image release (`deploy-prod.yml`):** `publish-image` (before the approval,
+  `packages: write`) checks out the tag, builds with `VERSION=<tag>`, `REVISION=<sha>`,
+  `SOURCE=<repo URL>` (OCI labels; links the GHCR package to the repo), Trivy (CRITICAL with fix
+  fails), pushes `:<tag>` and `:sha-<short sha of the tag commit>`, outputs the digest. Version
+  tags are immutable: an existing `:<tag>` is reused, never rebuilt/overwritten. `deploy` needs
+  it; `promote-image` (after deploy, `packages: write` only) checks `:<tag>` = recorded digest,
+  then `docker buildx imagetools create --tag :prod <image>@<digest>` (no rebuild) and verifies.
+  No other job/workflow gets `packages: write` (`tests/test_workflows.py`). Rollback = retag
+  `:prod` to an older version tag's digest (docs/runbook.md "Extractor image in prod").
 - **Extractor image (`Dockerfile`):** extraction only (`energy_lakehouse.extract_local` as
   ENTRYPOINT, default `--source all`). Builder stage (`ghcr.io/astral-sh/uv`, pinned) builds the
   wheel and `uv export --frozen --no-dev --no-emit-project` (base deps with hashes); runtime

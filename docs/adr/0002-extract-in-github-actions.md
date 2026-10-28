@@ -22,6 +22,10 @@ not available.
   GitHub secrets. It has `CAN_MANAGE_RUN` on the job and `WRITE VOLUME` on the landing volume.
 - The extractor is plain Python (`requests`), unit-tested offline, so the same code runs locally,
   in CI and in any workspace that does have internet access.
+- *Update 2026-10-29 (Lab 11):* the workflow now runs the extractor as the released container
+  image `ghcr.io/<owner>/energy-extractor:prod` (published and promoted by `deploy-prod.yml`)
+  into `$RUNNER_TEMP/landing`; upload and job trigger are unchanged. The container gets no
+  Databricks credentials.
 
 ## Consequences
 - Ingestion depends on GitHub Actions scheduling (cron runs can start late) and on a long-lived

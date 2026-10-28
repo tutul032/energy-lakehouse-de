@@ -26,9 +26,11 @@ RUN uv build --wheel --out-dir /dist \
 FROM ${PYTHON_IMAGE}
 ARG VERSION=0.1.0
 ARG REVISION=unknown
+# Repo URL; GHCR links the package to this repository (deploy-prod.yml passes it).
+ARG SOURCE=https://github.com/tutul032/energy-lakehouse-de
 LABEL org.opencontainers.image.title="energy-extractor" \
       org.opencontainers.image.description="SMARD + Open-Meteo raw extractor (energy_lakehouse)" \
-      org.opencontainers.image.source="https://github.com/tutul032/energy-lakehouse-de" \
+      org.opencontainers.image.source="${SOURCE}" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
