@@ -4,7 +4,8 @@ Parses .github/workflows/*.yml and checks:
 - deploy-prod runs publish-image -> deploy (production approval) -> promote-image, publishes
   :<tag> and :sha-<short sha> after a Trivy scan, and promotes by digest (imagetools, no build);
 - `packages: write` appears only on publish-image and promote-image, never workflow-wide;
-- no `uses:` reference (job or step) points at @main or @master;
+- no `uses:` reference (job or step) points at @main or @master, no checkout@v4 /
+  upload-artifact@v4 (Node 20), no `ubuntu-latest` runner;
 - daily-refresh has contents/packages read only, extracts with the :prod image via docker run
   (runner user, /data mount, same extractor arguments) instead of bare Python, and never hands
   DATABRICKS_* variables or env files to the container.
@@ -22,6 +23,7 @@ PACKAGE_WRITERS = {("deploy-prod.yml", "publish-image"), ("deploy-prod.yml", "pr
 DOCKER_RUN_RE = re.compile(r"\bdocker\s+run\b")
 CONTAINER_ENV_FLAG_RE = re.compile(r"(?:^|\s)(?:-e|--env|--env-file)(?:[\s=]|$)")
 BRANCH_REFS = ("@main", "@master")
+OUTDATED_ACTION_RE = re.compile(r"^actions/(?:checkout|upload-artifact)@v4(?:\.|$)")
 
 
 def load_workflow(name: str) -> dict:
@@ -52,6 +54,12 @@ def docker_run_commands(script: str) -> list[str]:
 def passes_env_to_container(command: str) -> bool:
     """True if a docker run command passes environment variables (-e, --env, --env-file)."""
     return CONTAINER_ENV_FLAG_RE.search(command) is not None
+
+
+def job_uses_references(job: dict) -> list[str]:
+    """`uses:` of a job (reusable workflow) and of its steps."""
+    refs = [job.get("uses")] + [s.get("uses") for s in job.get("steps") or []]
+    return [r for r in refs if r]
 
 
 def write_permissions(permissions) -> set[str]:
@@ -161,12 +169,36 @@ def test_packages_write_only_on_publish_and_promote():
     assert not problems, "\n".join(problems)
 
 
+def test_job_uses_references():
+    job = {"uses": "./ci.yml", "steps": [{"uses": "a/b@v1"}, {"run": "echo"}]}
+    assert job_uses_references(job) == ["./ci.yml", "a/b@v1"]
+    assert job_uses_references({}) == []
+
+
 def test_no_uses_reference_on_main_or_master():
     problems = []
     for name in workflow_files():
         for key, job in (load_workflow(name).get("jobs") or {}).items():
-            refs = [job.get("uses")] + [s.get("uses") for s in job.get("steps") or []]
-            problems += [f"{name}: job {key}: {r}" for r in refs if r and r.endswith(BRANCH_REFS)]
+            refs = job_uses_references(job)
+            problems += [f"{name}: job {key}: {r}" for r in refs if r.endswith(BRANCH_REFS)]
+    assert not problems, "\n".join(problems)
+
+
+def test_no_node20_artifact_or_checkout_actions():
+    problems = []
+    for name in workflow_files():
+        for key, job in (load_workflow(name).get("jobs") or {}).items():
+            refs = job_uses_references(job)
+            problems += [f"{name}: job {key}: {r}" for r in refs if OUTDATED_ACTION_RE.match(r)]
+    assert not problems, "\n".join(problems)
+
+
+def test_no_ubuntu_latest_runner():
+    problems = []
+    for name in workflow_files():
+        for key, job in (load_workflow(name).get("jobs") or {}).items():
+            if "ubuntu-latest" in str(job.get("runs-on", "")):
+                problems.append(f"{name}: job {key}: runs-on {job['runs-on']}")
     assert not problems, "\n".join(problems)
 
 

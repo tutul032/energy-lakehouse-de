@@ -163,7 +163,7 @@ overwrite those edits without `--force`.
    (below). It overwrites the remote edits.
 2. If the change **is wanted**: do not export from prod. Port it through the normal dashboard flow
    (CLAUDE.md, "AI/BI dashboard"): make the same change in the **dev** UI, export the source JSON,
-   run `uv run python scripts/build_dashboard.py` and `uv run pytest`, then open a PR, merge and
+   run `uv run python scripts/build_dashboard.py` and `uv run python -m pytest`, then open a PR, merge and
    cut a release. Then redeploy prod with `--force`, because the remote edit is still there and
    blocks the deploy either way.
 

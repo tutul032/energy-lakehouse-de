@@ -120,7 +120,7 @@ uv ([Lab 0](docs/tutorial/lab0-setup.md)).
 
 ```powershell
 uv sync
-uv run pytest
+uv run python -m pytest
 # One-time: create the shared landing volume (SQL editor):
 #   CREATE SCHEMA IF NOT EXISTS workspace.energy_raw;
 #   CREATE VOLUME IF NOT EXISTS workspace.energy_raw.landing;

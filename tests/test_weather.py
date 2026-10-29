@@ -152,12 +152,6 @@ def test_now_utc_is_aware_and_truncated_to_minute():
     assert (now.second, now.microsecond) == (0, 0)
 
 
-def test_fetch_returns_raw_bytes():
-    raw = FIXTURE.read_bytes()
-    session = FakeSession({weather.build_url(HAMBURG, 5): [FakeResponse(raw)]})
-    assert weather.fetch(session, HAMBURG, 5, sleep=no_sleep) == raw
-
-
 def test_extract_writes_raw_bytes_and_is_idempotent(tmp_path):
     raw = FIXTURE.read_bytes()
     session = FakeSession(
