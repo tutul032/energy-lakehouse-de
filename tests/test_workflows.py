@@ -4,6 +4,7 @@ Parses .github/workflows/*.yml and checks:
 - deploy-prod runs publish-image -> deploy (production approval) -> promote-image, publishes
   :<tag> and :sha-<short sha> after a Trivy scan, and promotes by digest (imagetools, no build);
 - `packages: write` appears only on publish-image and promote-image, never workflow-wide;
+- no `uses:` reference (job or step) points at @main or @master;
 - daily-refresh has contents/packages read only, extracts with the :prod image via docker run
   (runner user, /data mount, same extractor arguments) instead of bare Python, and never hands
   DATABRICKS_* variables or env files to the container.
@@ -20,6 +21,7 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 PACKAGE_WRITERS = {("deploy-prod.yml", "publish-image"), ("deploy-prod.yml", "promote-image")}
 DOCKER_RUN_RE = re.compile(r"\bdocker\s+run\b")
 CONTAINER_ENV_FLAG_RE = re.compile(r"(?:^|\s)(?:-e|--env|--env-file)(?:[\s=]|$)")
+BRANCH_REFS = ("@main", "@master")
 
 
 def load_workflow(name: str) -> dict:
@@ -156,6 +158,15 @@ def test_packages_write_only_on_publish_and_promote():
             has_write = "packages" in write_permissions(job.get("permissions"))
             if has_write != ((name, key) in PACKAGE_WRITERS):
                 problems.append(f"{name}: job {key}: packages write = {has_write}")
+    assert not problems, "\n".join(problems)
+
+
+def test_no_uses_reference_on_main_or_master():
+    problems = []
+    for name in workflow_files():
+        for key, job in (load_workflow(name).get("jobs") or {}).items():
+            refs = [job.get("uses")] + [s.get("uses") for s in job.get("steps") or []]
+            problems += [f"{name}: job {key}: {r}" for r in refs if r and r.endswith(BRANCH_REFS)]
     assert not problems, "\n".join(problems)
 
 
