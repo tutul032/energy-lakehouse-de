@@ -79,3 +79,16 @@ jobs:
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "${TRIVY_IMAGE}" \
             image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE}"
+
+  # Dev container (.devcontainer/): build it with its pinned image and features, run
+  # postCreateCommand (uv, uv sync, pre-commit install), then the unit tests inside it.
+  devcontainer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dev container and run the tests inside
+        uses: devcontainers/ci@v0.3.1900000450
+        with:
+          push: never
+          runCmd: uv run pytest -q
