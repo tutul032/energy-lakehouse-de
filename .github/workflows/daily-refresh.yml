@@ -30,7 +30,7 @@ jobs:
       PAST_DAYS: "7"
     steps:
       - uses: actions/checkout@v4
-      - uses: databricks/setup-cli@main
+      - uses: databricks/setup-cli@v1.23.0
 
       # GHCR image names must be lowercase. LOCAL_DIR is outside the checkout.
       - name: Prepare landing folder
