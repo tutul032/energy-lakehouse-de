@@ -22,14 +22,14 @@ permissions:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       LANDING_ROOT: /Volumes/workspace/energy_raw/landing
       SMARD_WEEKS: "8"
       PAST_DAYS: "7"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - uses: databricks/setup-cli@v1.23.0
 
       # GHCR image names must be lowercase. LOCAL_DIR is outside the checkout.
@@ -95,7 +95,7 @@ jobs:
 
       - name: Upload extractor logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: extract-logs-${{ github.run_id }}
           path: ${{ runner.temp }}/landing/logs/

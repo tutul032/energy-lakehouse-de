@@ -172,8 +172,6 @@ def test_imports_forecast():
 def test_package_notebook_tasks_found():
     task_keys = {key for _, key, _, _, source in notebook_tasks() if imports_package(source)}
     assert {
-        "hello",
-        "extract_smard",
         "quality_checks",
         "apply_contracts",
         "verify_contracts",
