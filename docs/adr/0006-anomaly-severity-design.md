@@ -18,9 +18,13 @@ the daily job on real market events would soon be switched off.
     flagged only if |z| ≥ 4 and the deviation is ≥ 25 % of the median; prices excluded);
   - `multivariate_isolation_forest` over load, price, generation and weather (contamination
     0.005);
-  - `forecast_drift_mae` (model worse than the baseline on 3 consecutive issue dates).
+  - `forecast_drift_mae` (model worse than the baseline on 3 consecutive issue dates);
+  - `completeness` of generation series (> 5 % of the expected local hours missing, also above
+    20 %): monitored, not gated, because no downstream gate or product depends on them.
 - **critical** = likely a data error; fails the job after the tables are written:
-  - `completeness` (> 20 % of the expected 23/24/25 local hours missing; > 5 % is a warning);
+  - `completeness` of the gated series `total_load` and `day_ahead_price` (forecast inputs and
+    `is_complete`; list `COMPLETENESS_CRITICAL_SERIES` in `anomalies.py`): > 20 % of the expected
+    23/24/25 local hours missing; > 5 % is a warning;
   - `physics_rules` (solar > 100 MWh while radiation < 1 W/m² at both H and H+1);
   - `forecast_drift_mape` (load MAPE > 6 % on 2 consecutive issue dates).
 - Detection is tested end to end by injecting a marked `TEST:total_load` anomaly (dev schemas
@@ -32,5 +36,9 @@ the daily job on real market events would soon be switched off.
 - The job fails only on findings that need action; warnings are ranked by score on the Data
   quality dashboard page for review.
 - Thresholds are explicit constants with unit tests, so changing them is a reviewed code change.
+- Gate vs monitor (2026-10-30): a single generation series with 5 of 24 hours missing
+  (hard_coal, 2026-10-29) failed prod although load and price were complete. Completeness is now
+  critical only for series that gates or products depend on; other series get a warning with the
+  same message.
 - The statistical detectors need history (at least 5 points per hour-of-week); new series are not
   scored until enough history exists.

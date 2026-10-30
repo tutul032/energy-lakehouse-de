@@ -44,7 +44,7 @@ databricks jobs get-run-output <task-run-id> -p free    # error message and trac
 | `apply_contracts` | A consumer group in a contract (e.g. `energy-consumers`) does not exist, so `GRANT` fails. | Create the group in the workspace, or remove it from the contract (PATCH bump). |
 | `verify_contracts` | Schema drift, a quality rule above its allowed violation %, or freshness SLA missed. The task lists every failure. | Schema: fix the pipeline or the contract (ADR 0005). Freshness: same as `quality_checks`. |
 | `score_forecast` | Fewer than 23 forecast rows for a target with a champion (e.g. no weather forecast for D+1). Targets without a champion are skipped with a warning, not failed. | Check `gold_weather_forecast_hourly` for D+1 and the weather upload. |
-| `detect_anomalies` | A **critical** finding (completeness, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. |
+| `detect_anomalies` | A **critical** finding (completeness of `total_load` / `day_ahead_price`, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. |
 | any notebook task | Serverless environment install failed (wheel or pinned packages). | Check the task's environment log; redeploy (`bundle deploy` rebuilds the wheel). |
 
 ## Rerun prod safely

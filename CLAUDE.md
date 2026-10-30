@@ -258,8 +258,8 @@ builds its own tables in its own schema.
     and MAD of the previous 8 weeks (current point excluded), z = 0.6745·(x − median)/MAD;
     skipped if < 5 history points; MAD floored at max(MAD, 5 % of |median|, 50 MWh); flagged
     only if |z| ≥ 4 **and** |x − median| ≥ 25 % of |median|. **Warning only** (seasonal effects
-    such as less autumn solar → more gas are often real); critical is reserved for completeness,
-    physics rules and forecast MAPE drift.
+    such as less autumn solar → more gas are often real); critical is reserved for completeness
+    of gated series, physics rules and forecast MAPE drift.
   - `multivariate_isolation_forest` on `gold_energy_weather_hourly` (load, price, solar, wind
     on/off, lignite, gas, on/offshore wind speed, radiation, local-hour sin/cos), contamination
     0.005, random_state 42; warning only. Trained on the last 365 days **including** the scored
@@ -268,7 +268,9 @@ builds its own tables in its own schema.
     median of the same local hour. scikit-learn is imported inside the function (Smart App
     Control can block scipy DLLs locally; its tests skip there but never in CI).
   - `completeness` per series and local day for the 7 complete days before today: expected
-    23/24/25 h vs distinct non-null hours; > 20 % missing critical, > 5 % warning.
+    23/24/25 h vs distinct non-null hours; > 5 % missing warning; > 20 % critical only for
+    `COMPLETENESS_CRITICAL_SERIES` (`total_load`, `day_ahead_price`: forecast inputs and
+    `is_complete`), a warning with the same message for every other (generation) series.
   - `physics_rules`: `solar_mwh > 100` while `shortwave_radiation_solar_avg_wm2 < 1` at both H
     and H+1 (Open-Meteo radiation is the mean of the *preceding* hour) → critical.
   - `forecast_drift` on `gold_forecast_accuracy`: MAE > baseline MAE on 3 consecutive issue
