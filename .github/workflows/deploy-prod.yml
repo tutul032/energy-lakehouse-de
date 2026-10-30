@@ -4,7 +4,9 @@ name: deploy-prod
 #   publish-image: build the extractor image (Dockerfile) from the tag, Trivy scan, push
 #                  ghcr.io/<owner>/energy-extractor:<tag> and :sha-<short sha>.
 #   deploy:        `production` environment approval (Settings -> Environments), bundle deploy.
-#   promote-image: retag the SAME digest as :prod (no rebuild); daily-refresh.yml runs :prod.
+#   promote-image: `crane tag` the SAME manifest as :prod (no rebuild, no new index);
+#                  daily-refresh.yml runs :prod.
+# Digests are read from the registry with crane (CRANE_VERSION), not from local docker.
 # Version tags are immutable: if :<tag> already exists (e.g. a manual rerun of a released tag),
 # publish-image reuses its digest instead of rebuilding and overwriting it.
 # The bundle job is not run here: daily-refresh.yml triggers the prod daily_refresh_job.
@@ -44,10 +46,15 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.73.0
+      CRANE_VERSION: v0.22.1
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           ref: refs/tags/${{ env.TAG }}
+      # Installs crane and logs it in to ghcr.io with GITHUB_TOKEN.
+      - uses: imjasonh/setup-crane@v0.7
+        with:
+          version: ${{ env.CRANE_VERSION }}
       # Short SHA of the tagged commit (github.sha is the branch head on workflow_dispatch).
       # GHCR image names must be lowercase.
       - name: Image name and revision
@@ -91,11 +98,12 @@ jobs:
         run: |
           docker push "${IMAGE}:${TAG}"
           docker push "${IMAGE}:sha-${SHORT_SHA}"
+      # The digest the registry serves for :<tag> (what promote-image tags as :prod).
       - name: Record digest
         id: digest
         run: |
           set -euo pipefail
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')"
+          digest="$(crane digest "${IMAGE}:${TAG}")"
           [[ "${digest}" == sha256:* ]] || { echo "::error::no digest for ${IMAGE}:${TAG}" >&2; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "published ${IMAGE}:${TAG} = ${IMAGE}@${digest}"
@@ -151,22 +159,25 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       IMAGE: ${{ needs.publish-image.outputs.image }}
       DIGEST: ${{ needs.publish-image.outputs.digest }}
+      CRANE_VERSION: v0.22.1
     steps:
-      - name: Log in to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-      - name: Retag the published digest as :prod (no rebuild)
+      # Installs crane and logs it in to ghcr.io with GITHUB_TOKEN.
+      - uses: imjasonh/setup-crane@v0.7
+        with:
+          version: ${{ env.CRANE_VERSION }}
+      # crane tag adds a tag to the existing manifest; `imagetools create` would write a new
+      # index around it (new digest), so :prod would never equal the recorded digest.
+      - name: Tag the published digest as :prod (no rebuild, no new manifest)
         run: |
           set -euo pipefail
           fail() { echo "::error::$*" >&2; exit 1; }
           [[ -n "${IMAGE}" && "${DIGEST}" == sha256:* ]] || fail "publish-image gave no image/digest"
-          current="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')" \
+          current="$(crane digest "${IMAGE}:${TAG}")" \
             || fail "${IMAGE}:${TAG} does not exist; refusing to promote"
           [[ "${current}" == "${DIGEST}" ]] \
             || fail "${IMAGE}:${TAG} is ${current}, but publish-image recorded ${DIGEST}"
-          docker buildx imagetools create --tag "${IMAGE}:prod" "${IMAGE}@${DIGEST}"
-          prod="$(docker buildx imagetools inspect "${IMAGE}:prod" --format '{{.Manifest.Digest}}')"
+          crane tag "${IMAGE}@${DIGEST}" prod
+          prod="$(crane digest "${IMAGE}:prod")"
           [[ "${prod}" == "${DIGEST}" ]] || fail "${IMAGE}:prod is ${prod}, expected ${DIGEST}"
           echo "promoted ${IMAGE}:${TAG} (${DIGEST}) -> ${IMAGE}:prod"
           echo "Promoted \`${IMAGE}:${TAG}\` (\`${DIGEST}\`) to \`:prod\`" >> "$GITHUB_STEP_SUMMARY"
