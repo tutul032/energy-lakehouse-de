@@ -6,7 +6,7 @@ the same container and runs the tests in it (`ci.yml`, job `devcontainer`).
 
 | Tool | Version | Source |
 |---|---|---|
-| Python | 3.12 (same minor as `.python-version` and CI) | image `mcr.microsoft.com/devcontainers/python:1-3.12-bookworm` |
+| Python | 3.12 (same minor as `.python-version` and CI) | `Dockerfile`: `FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm`, minus its Yarn apt source (missing signing key breaks `apt-get update` in the features) |
 | uv | 0.13.1 (same as the extractor `Dockerfile`) | `post-create.sh` (`pipx install uv==…`) |
 | Databricks CLI | 1.23.0 (same as CI) | local feature `features/databricks-cli` (official install script) |
 | GitHub CLI | feature default (latest release at build time) | feature `github-cli:1` |

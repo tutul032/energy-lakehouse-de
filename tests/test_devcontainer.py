@@ -2,8 +2,9 @@
 
 Static checks (no Docker needed); the ci.yml `devcontainer` job builds it and runs the tests
 inside. Checks:
-- the base image has a version tag (major `1-` or exact `x.y.z-`, never latest) whose Python
-  minor equals .python-version and the CI python-version;
+- devcontainer.json builds .devcontainer/Dockerfile (no `image`), whose base image (FROM) has a
+  version tag (major `1-` or exact `x.y.z-`, never latest) whose Python minor equals
+  .python-version and the CI python-version;
 - every feature reference has a major or exact semver tag (local `./features/...` excepted), tool
   versions in feature options are pinned (never latest), and the local Databricks CLI feature
   matches the CLI version CI installs (databricks/setup-cli@vX.Y.Z) when CI pins one;
@@ -23,6 +24,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEVCONTAINER_DIR = REPO_ROOT / ".devcontainer"
 CONFIG = DEVCONTAINER_DIR / "devcontainer.json"
+DOCKERFILE = DEVCONTAINER_DIR / "Dockerfile"
 POST_CREATE = DEVCONTAINER_DIR / "post-create.sh"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -51,6 +53,16 @@ def feature_tag(reference: str) -> str | None:
     """Tag of an OCI feature reference (`ghcr.io/a/b:1.2.3` -> `1.2.3`), None if untagged."""
     name = reference.rsplit("/", 1)[-1]
     return name.split(":", 1)[1] if ":" in name else None
+
+
+def from_images(dockerfile: str) -> list[str]:
+    """Images of all FROM lines (`FROM [--platform=x] image [AS name]`), in order."""
+    images = []
+    for line in dockerfile.splitlines():
+        parts = line.split()
+        if parts and parts[0].upper() == "FROM":
+            images.append(next(p for p in parts[1:] if not p.startswith("--")))
+    return images
 
 
 def walk_strings(value, path: str = ""):
@@ -124,14 +136,26 @@ def test_feature_tag_re(tag, ok):
     assert bool(FEATURE_TAG_RE.match(tag)) is ok
 
 
+def test_from_images():
+    text = "# c\nFROM --platform=linux/amd64 a:1 AS x\nRUN true\nfrom b:2\n"
+    assert from_images(text) == ["a:1", "b:2"]
+
+
 def test_walk_strings():
     found = list(walk_strings({"a": {"b": ["c"]}}))
     assert found == [("/a", "a"), ("/a/b", "b"), ("/a/b[0]", "c")]
 
 
-def test_image_pinned_with_project_python_minor(config):
-    match = IMAGE_RE.match(config.get("image", ""))
-    assert match, f"image not a versioned devcontainers/python tag: {config.get('image')}"
+def test_builds_dockerfile(config):
+    assert "image" not in config, "use build.dockerfile, not image"
+    assert config["build"]["dockerfile"] == "Dockerfile"
+    assert "rm -f /etc/apt/sources.list.d/yarn.list" in DOCKERFILE.read_text(encoding="utf-8")
+
+
+def test_base_image_pinned_with_project_python_minor():
+    (image,) = from_images(DOCKERFILE.read_text(encoding="utf-8"))
+    match = IMAGE_RE.match(image)
+    assert match, f"base image not a versioned devcontainers/python tag: {image}"
     python_minor = match.group(1)
     assert python_minor == (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip()
     ci = ci_python_versions()
