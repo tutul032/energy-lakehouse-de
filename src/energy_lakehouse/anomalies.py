@@ -8,7 +8,8 @@ severity (``critical`` | ``warning``) and reason.
 
 - ``seasonal_robust_z``: per entity and local hour-of-week, median/MAD of the previous weeks.
 - ``multivariate_isolation_forest``: IsolationForest over the hourly gold features (warning).
-- ``completeness``: present vs expected (23/24/25) hours per series and local day.
+- ``completeness``: present vs expected (23/24/25) hours per series and local day (critical
+  only for ``COMPLETENESS_CRITICAL_SERIES``).
 - ``physics_rules``: solar output while the solar locations report no radiation (critical).
 - ``forecast_drift``: model worse than the seasonal naive baseline, or MAPE too high, on
   consecutive issue dates.
@@ -43,7 +44,7 @@ DRIFT_MAPE = "forecast_drift_mape"
 # Severities each check can emit; the daily summary has one row per pair (n = 0 if none found).
 CHECK_SEVERITIES: dict[str, tuple[str, ...]] = {
     # Seasonal deviations are often real (late autumn: less solar -> more gas): warnings only.
-    # Critical is reserved for completeness, physics rules and forecast MAPE drift.
+    # Critical is reserved for completeness of gated series, physics rules and forecast MAPE drift.
     SEASONAL_Z: (WARNING,),
     ISOLATION_FOREST: (WARNING,),
     COMPLETENESS: (CRITICAL, WARNING),
@@ -91,7 +92,10 @@ IF_TOP_FEATURES = 3
 
 COMPLETENESS_DAYS = 7
 COMPLETENESS_WARN_PCT = 5.0  # missing share above which a series-day is a warning ...
-COMPLETENESS_CRIT_PCT = 20.0  # ... and above which it is critical
+COMPLETENESS_CRIT_PCT = 20.0  # ... and above which it is critical (gated series only)
+# Series that downstream gates and products depend on (forecast inputs, is_complete): a gap is
+# critical. Any other series (generation) gets a warning with the same message (monitor only).
+COMPLETENESS_CRITICAL_SERIES: tuple[str, ...] = ("total_load", "day_ahead_price")
 
 SOLAR_ENTITY = "solar_mwh"
 SOLAR_NIGHT_MAX_MWH = 100.0
@@ -382,13 +386,16 @@ def completeness(
     value_col: str = "value",
     warn_pct: float = COMPLETENESS_WARN_PCT,
     crit_pct: float = COMPLETENESS_CRIT_PCT,
+    critical_entities: Iterable[str] = COMPLETENESS_CRITICAL_SERIES,
 ) -> pd.DataFrame:
     """Missing hours per entity and complete local day (the ``days`` days before ``today``).
 
     Expected hours are 23/24/25 (DST); present hours are distinct UTC hours with a non-null
-    value. Missing share > ``crit_pct`` is critical, > ``warn_pct`` a warning. ``entities``
-    (default: those in ``df``) lets a series that delivered nothing at all show up as missing.
+    value. Missing share > ``crit_pct`` is critical for ``critical_entities`` (a warning for any
+    other entity), > ``warn_pct`` a warning. ``entities`` (default: those in ``df``) lets a series
+    that delivered nothing at all show up as missing.
     """
+    critical_entities = set(critical_entities)
     data = df.loc[df[value_col].notna(), ["entity", "ts_utc"]].copy()
     hours = to_utc(data["ts_utc"]).dt.floor("h")
     data = data.assign(hour=hours, day=hours.dt.tz_convert(LOCAL_TZ).dt.date)
@@ -414,7 +421,9 @@ def completeness(
                     "lower": expected * (1 - warn_pct / 100),
                     "upper": expected,
                     "score": pct,
-                    "severity": CRITICAL if pct > crit_pct else WARNING,
+                    "severity": (
+                        CRITICAL if pct > crit_pct and entity in critical_entities else WARNING
+                    ),
                     "reason": f"{missing} of {expected} hours missing on {day} ({pct:.0f}%)",
                 }
             )
