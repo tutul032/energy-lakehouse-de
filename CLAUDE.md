@@ -18,7 +18,7 @@ Dockerfile                  # extractor image (multi-stage: uv builds wheel; pyt
 .dockerignore               # build context = pyproject.toml, uv.lock, README.md, package, contracts
 .gitattributes              # *.sh eol=lf (scripts run on Linux: CI, dev container bind mount)
 .devcontainer/              # VS Code dev container (see .devcontainer/README.md)
-  devcontainer.json         #   pinned python image + features, remoteUser vscode, venv outside workspace
+  devcontainer.json         #   python image + features (major tags), remoteUser vscode, venv outside workspace
   post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory, pre-commit install
   features/databricks-cli/  #   local feature: official setup-cli install script at a pinned version
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
@@ -418,10 +418,10 @@ builds its own tables in its own schema.
   `--build-arg PYTHON_IMAGE=mirror.gcr.io/library/python:<same tag>`. `tests/test_docker.py`
   checks non-root USER, pinned FROMs, no `ADD http`, no repo-wide COPY, `.dockerignore`.
   Trivy CRITICAL with a fix in a Python dependency → `uv lock --upgrade-package <name>`.
-- **Dev container (`.devcontainer/`):** image `mcr.microsoft.com/devcontainers/python:<x.y.z>-3.12-trixie`
-  (exact tag; Python minor = `.python-version` = CI), features at exact `x.y.z` tags with pinned
-  tool versions (`github-cli`, `docker-outside-of-docker` with `moby: false` on trixie, local
-  `features/databricks-cli` = the CI `setup-cli` version), uv in `post-create.sh` = the
+- **Dev container (`.devcontainer/`):** image `mcr.microsoft.com/devcontainers/python:1-3.12-bookworm`
+  (major or exact `x.y.z` tag, never `latest`; Python minor = `.python-version` = CI), features
+  `github-cli:1` and `docker-outside-of-docker:1` (major tags, no options), local
+  `features/databricks-cli` pinned to the CI `setup-cli` version (1.23.0), uv in `post-create.sh` = the
   Dockerfile's uv. `remoteUser: vscode`; venv at `$UV_PROJECT_ENVIRONMENT`
   (`/home/vscode/.venvs/energy-lakehouse-de`, never the host `.venv`). No mounts of credentials and
   no TOKEN/SECRET env: log in inside with `databricks auth login --host <workspace.host> --profile

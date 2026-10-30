@@ -6,11 +6,11 @@ the same container and runs the tests in it (`ci.yml`, job `devcontainer`).
 
 | Tool | Version | Source |
 |---|---|---|
-| Python | 3.12 (same minor as `.python-version` and CI) | image `mcr.microsoft.com/devcontainers/python:3.3.2-3.12-trixie` |
+| Python | 3.12 (same minor as `.python-version` and CI) | image `mcr.microsoft.com/devcontainers/python:1-3.12-bookworm` |
 | uv | 0.13.1 (same as the extractor `Dockerfile`) | `post-create.sh` (`pipx install uv==…`) |
-| Databricks CLI | 1.22.1 (same as CI) | local feature `features/databricks-cli` (official install script) |
-| GitHub CLI | 2.103.3 | feature `github-cli:1.1.3` |
-| Docker CLI | 29.9.2, using the host daemon | feature `docker-outside-of-docker:1.10.1` |
+| Databricks CLI | 1.23.0 (same as CI) | local feature `features/databricks-cli` (official install script) |
+| GitHub CLI | feature default (latest release at build time) | feature `github-cli:1` |
+| Docker CLI | feature default (latest release at build time), using the host daemon | feature `docker-outside-of-docker:1` |
 
 After the container is created, `post-create.sh` runs `uv sync --locked` (venv in
 `/home/vscode/.venvs/energy-lakehouse-de`, outside the workspace) and `uv run pre-commit install`.
