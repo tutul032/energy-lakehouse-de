@@ -82,18 +82,6 @@ def build_archive_url(location: WeatherLocation, start: date, end: date) -> str:
     return f"{ARCHIVE_URL}?{urlencode(params, safe=',')}"
 
 
-def fetch(
-    session: requests.Session,
-    location: WeatherLocation,
-    past_days: int,
-    sleep: Callable[[float], None] = time.sleep,
-    forecast_days: int = DEFAULT_FORECAST_DAYS,
-) -> bytes:
-    """Raw forecast response body (JSON bytes, unparsed) for one location."""
-    url = build_url(location, past_days, forecast_days)
-    return get_with_retry(session, url, sleep=sleep).content
-
-
 def format_run_ts(run_ts: datetime) -> str:
     """UTC run timestamp as used in file names, e.g. ``20261022T0517Z`` (naive = UTC)."""
     if run_ts.tzinfo is not None:

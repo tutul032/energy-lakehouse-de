@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from energy_lakehouse import anomalies as an
+from energy_lakehouse.smard_config import SERIES
 from energy_lakehouse.transforms import GOLD_DQ_ANOMALIES_COLUMNS, LOCAL_TZ
 
 NOW = pd.Timestamp("2026-10-20 05:17", tz="UTC")
@@ -307,8 +308,8 @@ def test_completeness_dst_day_expects_23_and_25_hours():
 )
 def test_completeness_thresholds(missing, severity):
     day = date(2026, 10, 19)
-    df = day_frame("solar", day, drop=missing)
-    rows = an.completeness(df, today=day + timedelta(days=1), days=1, entities=["solar"])
+    df = day_frame("total_load", day, drop=missing)
+    rows = an.completeness(df, today=day + timedelta(days=1), days=1, entities=["total_load"])
     if severity is None:
         assert rows.empty
     else:
@@ -331,8 +332,33 @@ def test_completeness_null_values_and_absent_series_count_as_missing():
     assert dict(zip(rows["entity"], rows["value"], strict=True)) == {"solar": 21, "lignite": 0}
     assert dict(zip(rows["entity"], rows["severity"], strict=True)) == {
         "solar": an.WARNING,
-        "lignite": an.CRITICAL,
+        "lignite": an.WARNING,  # 100 % missing, but generation is monitored only
     }
+
+
+@pytest.mark.parametrize(
+    ("entity", "severity"),
+    [("hard_coal", an.WARNING), ("total_load", an.CRITICAL), ("day_ahead_price", an.CRITICAL)],
+)
+def test_completeness_critical_only_for_gated_series(entity, severity):
+    day = date(2026, 10, 29)
+    rows = an.completeness(day_frame(entity, day, drop=5), today=date(2026, 10, 30), days=1)
+    assert list(rows["severity"]) == [severity]  # 5 of 24 hours = 21 % > 20 %
+    assert rows.iloc[0]["reason"] == "5 of 24 hours missing on 2026-10-29 (21%)"
+    assert bool(an.critical_failures(rows)) is (severity == an.CRITICAL)
+
+
+def test_completeness_critical_series_configurable():
+    day = date(2026, 10, 29)
+    rows = an.completeness(
+        day_frame("hard_coal", day, drop=5),
+        today=date(2026, 10, 30),
+        days=1,
+        critical_entities=["hard_coal"],
+    )
+    assert list(rows["severity"]) == [an.CRITICAL]
+    assert set(an.COMPLETENESS_CRITICAL_SERIES) == {"total_load", "day_ahead_price"}
+    assert set(an.COMPLETENESS_CRITICAL_SERIES) <= {s.name for s in SERIES}  # no typos
 
 
 def test_completeness_covers_complete_days_before_today_only():

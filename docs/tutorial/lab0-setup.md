@@ -27,7 +27,7 @@ Prepare a Windows 11 machine to develop, test and deploy this bundle to Databric
   uv sync
   uv run ruff check .
   uv run ruff format --check .
-  uv run pytest
+  uv run python -m pytest
   ```
 - **Expected result:** ruff prints `All checks passed!`; pytest reports all tests passed.
 - **Screenshot:** `docs/img/lab0-step02-pytest.png`
@@ -62,7 +62,7 @@ Prepare a Windows 11 machine to develop, test and deploy this bundle to Databric
 - **Screenshot:** `docs/img/lab0-step05-validate.png`
 
 ## Checkpoint
-- [ ] `uv run pytest` passes
+- [ ] `uv run python -m pytest` passes
 - [ ] `databricks current-user me -p free` returns your user
 - [ ] `databricks bundle validate -t dev -p free` prints `Validation OK!`
 

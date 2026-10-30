@@ -84,7 +84,9 @@ docs/data-products/         # generated data product pages (one per contract; do
                                      #   -> deploy (env production approval) -> promote-image (:prod)
 .github/workflows/daily-refresh.yml  # 05:17 UTC: docker run energy-extractor:prod, sync_landing.sh
                                      #   (SKIP_EXTRACT=1), then jobs run-now prod daily_refresh_job
-tests/test_workflows.py              # deploy-prod job order/permissions, daily-refresh image + no secrets
+tests/test_workflows.py              # deploy-prod job order/permissions, daily-refresh image + no secrets,
+                                     #   pinned actions (no @main/@master, no checkout/upload-artifact
+                                     #   @v4), runs-on ubuntu-24.04 (never ubuntu-latest)
 ```
 
 ## Local setup
@@ -97,7 +99,7 @@ tests/test_workflows.py              # deploy-prod job order/permissions, daily-
 uv sync                                    # create .venv, install dev deps
 uv run ruff check .                        # lint
 uv run ruff format .                       # format (CI runs --check)
-uv run pytest                              # unit tests (or: uv run python -m pytest)
+uv run python -m pytest                    # unit tests
 uv run python -m energy_lakehouse.extract_local --out data/landing --weeks 8  # both (weather: daily mode)
 uv run python -m energy_lakehouse.extract_local --source weather                # weather only, past 7 days + today + 2 days
 # One-off weather history backfill (archive API), then upload it:
@@ -112,8 +114,6 @@ uv build --wheel --clear                               # dist/*.whl (bundle depl
 uv run python scripts/build_dashboard.py               # build/energy_market_de.<target>.lvdash.json
 databricks bundle validate -t dev -p free              # needs the build first (dashboard file_path)
 databricks bundle deploy   -t dev -p free
-databricks bundle run hello_job -t dev -p free
-databricks bundle run extract_smard_job -t dev -p free
 databricks bundle run energy_pipeline -t dev -p free                   # incremental update
 databricks bundle run energy_pipeline -t dev -p free --full-refresh-all # rebuild all tables
 databricks bundle run daily_refresh_job -t dev -p free                 # pipeline, checks, contracts, forecast, DQ
@@ -174,7 +174,7 @@ builds its own tables in its own schema.
   them. Every new function gets a pytest test.
 - **SMARD landing:** raw chunk JSON is written unchanged to
   `<base>/smard/filter=<id>/resolution=<res>/<ts>.json` (local `data/landing`, or the shared
-  `/Volumes/workspace/energy_raw/landing` via `01_extract_smard`, widget/job parameter
+  `/Volumes/workspace/energy_raw/landing` via `01_extract_smard`, widget
   `landing_root`). Existing files are skipped;
   pass `--overwrite` / `overwrite=True` to refresh. Exception: the `refresh_latest` newest chunks
   per series (default 2, `--refresh-latest`) are always re-downloaded so late-published hours get
@@ -264,8 +264,8 @@ builds its own tables in its own schema.
     and MAD of the previous 8 weeks (current point excluded), z = 0.6745·(x − median)/MAD;
     skipped if < 5 history points; MAD floored at max(MAD, 5 % of |median|, 50 MWh); flagged
     only if |z| ≥ 4 **and** |x − median| ≥ 25 % of |median|. **Warning only** (seasonal effects
-    such as less autumn solar → more gas are often real); critical is reserved for completeness,
-    physics rules and forecast MAPE drift.
+    such as less autumn solar → more gas are often real); critical is reserved for completeness
+    of gated series, physics rules and forecast MAPE drift.
   - `multivariate_isolation_forest` on `gold_energy_weather_hourly` (load, price, solar, wind
     on/off, lignite, gas, on/offshore wind speed, radiation, local-hour sin/cos), contamination
     0.005, random_state 42; warning only. Trained on the last 365 days **including** the scored
@@ -274,7 +274,9 @@ builds its own tables in its own schema.
     median of the same local hour. scikit-learn is imported inside the function (Smart App
     Control can block scipy DLLs locally; its tests skip there but never in CI).
   - `completeness` per series and local day for the 7 complete days before today: expected
-    23/24/25 h vs distinct non-null hours; > 20 % missing critical, > 5 % warning.
+    23/24/25 h vs distinct non-null hours; > 5 % missing warning; > 20 % critical only for
+    `COMPLETENESS_CRITICAL_SERIES` (`total_load`, `day_ahead_price`: forecast inputs and
+    `is_complete`), a warning with the same message for every other (generation) series.
   - `physics_rules`: `solar_mwh > 100` while `shortwave_radiation_solar_avg_wm2 < 1` at both H
     and H+1 (Open-Meteo radiation is the mean of the *preceding* hour) → critical.
   - `forecast_drift` on `gold_forecast_accuracy`: MAE > baseline MAE on 3 consecutive issue
@@ -347,7 +349,7 @@ builds its own tables in its own schema.
     after `verify_contracts`): activate after the first daily runs.
   - **How to change a contract:** change `transforms.py` (if the table changes) and the YAML
     together in one PR, bump `version`, run `uv run python scripts/render_contract_docs.py`,
-    `uv run pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column
+    `uv run python -m pytest`. Semver: removing/renaming a column or changing its type = MAJOR; new column
     = MINOR; descriptions, rules, tags, SLA wording = PATCH. Never edit `docs/data-products/` by
     hand.
 - **AI/BI dashboard (edit → export → build):** the dev UI needs fully qualified dataset SQL, so
@@ -365,7 +367,7 @@ builds its own tables in its own schema.
      build before every `bundle validate/deploy`; `build/` is gitignored. CI builds before
      validate (`ci.yml`) and before deploy (`deploy-staging.yml` / `deploy-prod.yml`, stdlib only:
      `PYTHONPATH=src python3 scripts/build_dashboard.py --target <target>`).
-  4. `uv run pytest`, commit the source JSON. `tests/test_dashboard.py`: the source SQL names
+  4. `uv run python -m pytest`, commit the source JSON. `tests/test_dashboard.py`: the source SQL names
      only `workspace.energy_dev.` (never energy_staging/energy_prod, no other energy_dev form),
      each built file's SQL names only its own schema, every dataset is used by a widget.
 - **Wheel (`energy_lakehouse`):** `pyproject.toml` (hatchling) packages only

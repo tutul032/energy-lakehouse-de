@@ -44,7 +44,7 @@ databricks jobs get-run-output <task-run-id> -p free    # error message and trac
 | `apply_contracts` | A consumer group in a contract (e.g. `energy-consumers`) does not exist, so `GRANT` fails. | Create the group in the workspace, or remove it from the contract (PATCH bump). |
 | `verify_contracts` | Schema drift, a quality rule above its allowed violation %, or freshness SLA missed. The task lists every failure. | Schema: fix the pipeline or the contract (ADR 0005). Freshness: same as `quality_checks`. |
 | `score_forecast` | Fewer than 23 forecast rows for a target with a champion (e.g. no weather forecast for D+1). Targets without a champion are skipped with a warning, not failed. | Check `gold_weather_forecast_hourly` for D+1 and the weather upload. |
-| `detect_anomalies` | A **critical** finding (completeness, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. |
+| `detect_anomalies` | A **critical** finding (completeness of `total_load` / `day_ahead_price`, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. |
 | any notebook task | Serverless environment install failed (wheel or pinned packages). | Check the task's environment log; redeploy (`bundle deploy` rebuilds the wheel). |
 
 ## Rerun prod safely
@@ -163,7 +163,7 @@ overwrite those edits without `--force`.
    (below). It overwrites the remote edits.
 2. If the change **is wanted**: do not export from prod. Port it through the normal dashboard flow
    (CLAUDE.md, "AI/BI dashboard"): make the same change in the **dev** UI, export the source JSON,
-   run `uv run python scripts/build_dashboard.py` and `uv run pytest`, then open a PR, merge and
+   run `uv run python scripts/build_dashboard.py` and `uv run python -m pytest`, then open a PR, merge and
    cut a release. Then redeploy prod with `--force`, because the remote edit is still there and
    blocks the deploy either way.
 
@@ -276,29 +276,31 @@ gh run list --workflow daily-refresh.yml --limit 5
 gh run view <run-id> --log | Select-String "extractor:"
 ```
 
-**Which version is `:prod` now?** Compare digests (any authenticated `docker login ghcr.io`,
-see below):
+**Which version is `:prod` now?** Compare registry digests with
+[crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane) (the version in
+`CRANE_VERSION` of `deploy-prod.yml`; log in as below):
 
 ```powershell
 $image = "ghcr.io/tutul032/energy-extractor"
-docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'
-docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+crane digest "${image}:prod"
+crane digest "${image}:v0.7.0"
 ```
 
 Or *GitHub → your profile → Packages → energy-extractor*: each version lists its tags.
 
-**Roll back the extractor only** (bundle stays as deployed): retag `:prod` to the digest of an
-older version tag. No rebuild; the next `daily-refresh` run uses it.
+**Roll back the extractor only** (bundle stays as deployed): `crane tag` the older version's
+manifest as `:prod`. No rebuild and no new manifest (`docker buildx imagetools create` would
+write a new index with a different digest); the next `daily-refresh` run uses it.
 
 ```powershell
 gh auth refresh -s write:packages                  # once: token scope for pushing tags
-gh auth token | docker login ghcr.io -u tutul032 --password-stdin
+gh auth token | crane auth login ghcr.io -u tutul032 --password-stdin
 $image = "ghcr.io/tutul032/energy-extractor"
-$digest = docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+$digest = crane digest "${image}:v0.7.0"
 if ($LASTEXITCODE -ne 0) { throw "tag v0.7.0 not found" }
-docker buildx imagetools create --tag "${image}:prod" "${image}@${digest}"
-docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'   # = $digest
-docker logout ghcr.io
+crane tag "${image}:v0.7.0" prod
+crane digest "${image}:prod"                       # must equal $digest
+crane auth logout ghcr.io
 ```
 
 **Roll back everything** (bundle + image): *Actions → deploy-prod → Run workflow* with the older

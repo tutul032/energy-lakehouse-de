@@ -22,20 +22,20 @@ jobs:
 
   deploy:
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CICD_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CICD_CLIENT_SECRET }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       # bundle deploy builds the energy_lakehouse wheel (databricks.yml artifacts:
       # uv build --wheel), so uv and Python 3.12 are needed on the runner.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - uses: databricks/setup-cli@main
+      - uses: databricks/setup-cli@v1.23.0
       # Stdlib-only build (no uv/package install needed); file_path points at the built file.
       - name: Build dashboard file (staging)
         run: python3 scripts/build_dashboard.py --target staging
