@@ -2,9 +2,9 @@
 
 Static checks (no Docker needed); the ci.yml `devcontainer` job builds it and runs the tests
 inside. Checks:
-- the base image has an exact version tag (no latest) whose Python minor equals .python-version
-  and the CI python-version;
-- every feature reference has an exact semver tag (local `./features/...` excepted), tool
+- the base image has a version tag (major `1-` or exact `x.y.z-`, never latest) whose Python
+  minor equals .python-version and the CI python-version;
+- every feature reference has a major or exact semver tag (local `./features/...` excepted), tool
   versions in feature options are pinned (never latest), and the local Databricks CLI feature
   matches the CLI version CI installs (databricks/setup-cli@vX.Y.Z) when CI pins one;
 - postCreateCommand installs a pinned uv (same as the extractor Dockerfile), then `uv sync` and
@@ -26,7 +26,10 @@ CONFIG = DEVCONTAINER_DIR / "devcontainer.json"
 POST_CREATE = DEVCONTAINER_DIR / "post-create.sh"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-IMAGE_RE = re.compile(r"^mcr\.microsoft\.com/devcontainers/python:\d+\.\d+\.\d+-(\d+\.\d+)-\w+$")
+FEATURE_TAG_RE = re.compile(r"^\d+(\.\d+\.\d+)?$")
+IMAGE_RE = re.compile(
+    r"^mcr\.microsoft\.com/devcontainers/python:\d+(?:\.\d+\.\d+)?-(\d+\.\d+)-\w+$"
+)
 SECRET_RE = re.compile(r"TOKEN|SECRET|PASSWORD|CLIENT_ID|API_KEY", re.IGNORECASE)
 CREDENTIAL_PATHS = (".databrickscfg", ".databricks", ".ssh", ".git-credentials", ".config/gh")
 REQUIRED_EXTENSIONS = {
@@ -101,6 +104,26 @@ def test_feature_tag(reference, tag):
     assert feature_tag(reference) == tag
 
 
+@pytest.mark.parametrize(
+    ("image", "ok"),
+    [
+        ("mcr.microsoft.com/devcontainers/python:1-3.12-bookworm", True),
+        ("mcr.microsoft.com/devcontainers/python:3.3.2-3.12-trixie", True),
+        ("mcr.microsoft.com/devcontainers/python:latest", False),
+        ("mcr.microsoft.com/devcontainers/python:3.12", False),
+    ],
+)
+def test_image_re(image, ok):
+    assert bool(IMAGE_RE.match(image)) is ok
+
+
+@pytest.mark.parametrize(
+    ("tag", "ok"), [("1", True), ("1.1.3", True), ("latest", False), ("1.1", False)]
+)
+def test_feature_tag_re(tag, ok):
+    assert bool(FEATURE_TAG_RE.match(tag)) is ok
+
+
 def test_walk_strings():
     found = list(walk_strings({"a": {"b": ["c"]}}))
     assert found == [("/a", "a"), ("/a/b", "b"), ("/a/b[0]", "c")]
@@ -108,7 +131,7 @@ def test_walk_strings():
 
 def test_image_pinned_with_project_python_minor(config):
     match = IMAGE_RE.match(config.get("image", ""))
-    assert match, f"image not an exact devcontainers/python tag: {config.get('image')}"
+    assert match, f"image not a versioned devcontainers/python tag: {config.get('image')}"
     python_minor = match.group(1)
     assert python_minor == (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip()
     ci = ci_python_versions()
@@ -120,8 +143,8 @@ def test_features_pinned(config):
     for reference, options in config.get("features", {}).items():
         if reference.startswith("./"):
             assert (DEVCONTAINER_DIR / reference / "install.sh").is_file(), reference
-        elif not SEMVER_RE.match(feature_tag(reference) or ""):
-            problems.append(f"{reference}: not an exact x.y.z tag")
+        elif not FEATURE_TAG_RE.match(feature_tag(reference) or ""):
+            problems.append(f"{reference}: not a major or exact x.y.z tag")
         version = (options or {}).get("version")
         if version is not None and not SEMVER_RE.match(str(version)):
             problems.append(f"{reference}: tool version {version!r} not pinned")
