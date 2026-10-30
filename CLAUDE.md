@@ -16,6 +16,12 @@ Portfolio project: German energy data engineering on Databricks.
 databricks.yml              # bundle root: variables, whl artifact (energy_lakehouse), targets
 Dockerfile                  # extractor image (multi-stage: uv builds wheel; python slim, user app)
 .dockerignore               # build context = pyproject.toml, uv.lock, README.md, package, contracts
+.gitattributes              # *.sh eol=lf (scripts run on Linux: CI, dev container bind mount)
+.devcontainer/              # VS Code dev container (see .devcontainer/README.md)
+  devcontainer.json         #   build Dockerfile + features (major tags), remoteUser vscode, venv outside workspace
+  Dockerfile                #   FROM python base image (major tag), removes the broken Yarn apt source
+  post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory, pre-commit install
+  features/databricks-cli/  #   local feature: official setup-cli install script at a pinned version
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
   energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
 src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel, see "Wheel")
@@ -73,6 +79,7 @@ docs/img/                   # screenshots: labN-stepNN-name.png
 docs/data-products/         # generated data product pages (one per contract; do not hand-edit)
 .github/workflows/ci.yml    # PR + push master (+ workflow_call): job ci (lint, test, bundle validate
                             #   staging/prod) + job docker (hadolint, build, smoke extract, Trivy)
+                            #   + job devcontainer (devcontainers/ci: build, uv run pytest -q inside)
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
 .github/workflows/deploy-prod.yml    # release v*: publish-image (build, Trivy, push :<tag>/:sha-<sha>)
                                      #   -> deploy (env production approval) -> promote-image (:prod)
@@ -412,6 +419,18 @@ builds its own tables in its own schema.
   `--build-arg PYTHON_IMAGE=mirror.gcr.io/library/python:<same tag>`. `tests/test_docker.py`
   checks non-root USER, pinned FROMs, no `ADD http`, no repo-wide COPY, `.dockerignore`.
   Trivy CRITICAL with a fix in a Python dependency → `uv lock --upgrade-package <name>`.
+- **Dev container (`.devcontainer/`):** `build.dockerfile` = `.devcontainer/Dockerfile`, `FROM
+  mcr.microsoft.com/devcontainers/python:1-3.12-bookworm` (major or exact `x.y.z` tag, never
+  `latest`; Python minor = `.python-version` = CI) plus `rm -f /etc/apt/sources.list.d/yarn.list`
+  (the base image's Yarn source has a missing key, NO_PUBKEY, so feature `apt-get update` fails), features
+  `github-cli:1` and `docker-outside-of-docker:1` (major tags, no options), local
+  `features/databricks-cli` pinned to the CI `setup-cli` version (1.23.0), uv in `post-create.sh` = the
+  Dockerfile's uv. `remoteUser: vscode`; venv at `$UV_PROJECT_ENVIRONMENT`
+  (`/home/vscode/.venvs/energy-lakehouse-de`, never the host `.venv`). No mounts of credentials and
+  no TOKEN/SECRET env: log in inside with `databricks auth login --host <workspace.host> --profile
+  free` (callback port 8020 forwarded) and `gh auth login`. When bumping a version, keep these
+  equalities (`tests/test_devcontainer.py`). Inside: `docker run` without `-it` loses output
+  (socat proxy), `-v` paths are host paths.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

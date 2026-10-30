@@ -135,6 +135,22 @@ databricks bundle run train_forecast_job -t dev -p free
 The full walkthrough is in the [tutorial](docs/tutorial/README.md); operations are in the
 [runbook](docs/runbook.md).
 
+### Develop in a container
+
+`.devcontainer/` gives a Linux environment with pinned tools: Python 3.12, uv, the Databricks
+CLI, the GitHub CLI, and Docker using the host daemon. In VS Code with Docker running: **Dev
+Containers: Reopen in Container**. Then:
+
+```bash
+uv run pytest -q                       # full suite, incl. the scikit-learn tests
+databricks auth login --host https://dbc-405898bc-c90e.cloud.databricks.com --profile free
+gh auth login --web
+```
+
+No credentials are mounted from the host; logins are made inside the container. CI builds the
+same container and runs the tests in it. Details and Windows limitations:
+[.devcontainer/README.md](.devcontainer/README.md).
+
 ## Data licences
 
 - **SMARD.de** (Bundesnetzagentur): [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

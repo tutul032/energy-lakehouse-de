@@ -6,6 +6,9 @@ release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after
 ## [Unreleased]
 
 ### Added
+- VS Code dev container (`.devcontainer/`): pinned Python 3.12 image, uv, Databricks CLI, GitHub
+  CLI, docker-outside-of-docker; ci.yml job `devcontainer` runs the tests inside it;
+  `.gitattributes` keeps `*.sh` LF.
 - Portfolio documentation: README, ADRs 0002–0009, runbook (failed refresh, safe rerun, DST,
   secret rotation, release checklist), tutorial index, this changelog.
 - Extractor Docker image (`Dockerfile`, `.dockerignore`): multi-stage, non-root, extract-only;
