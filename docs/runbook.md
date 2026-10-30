@@ -276,29 +276,31 @@ gh run list --workflow daily-refresh.yml --limit 5
 gh run view <run-id> --log | Select-String "extractor:"
 ```
 
-**Which version is `:prod` now?** Compare digests (any authenticated `docker login ghcr.io`,
-see below):
+**Which version is `:prod` now?** Compare registry digests with
+[crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane) (the version in
+`CRANE_VERSION` of `deploy-prod.yml`; log in as below):
 
 ```powershell
 $image = "ghcr.io/tutul032/energy-extractor"
-docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'
-docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+crane digest "${image}:prod"
+crane digest "${image}:v0.7.0"
 ```
 
 Or *GitHub → your profile → Packages → energy-extractor*: each version lists its tags.
 
-**Roll back the extractor only** (bundle stays as deployed): retag `:prod` to the digest of an
-older version tag. No rebuild; the next `daily-refresh` run uses it.
+**Roll back the extractor only** (bundle stays as deployed): `crane tag` the older version's
+manifest as `:prod`. No rebuild and no new manifest (`docker buildx imagetools create` would
+write a new index with a different digest); the next `daily-refresh` run uses it.
 
 ```powershell
 gh auth refresh -s write:packages                  # once: token scope for pushing tags
-gh auth token | docker login ghcr.io -u tutul032 --password-stdin
+gh auth token | crane auth login ghcr.io -u tutul032 --password-stdin
 $image = "ghcr.io/tutul032/energy-extractor"
-$digest = docker buildx imagetools inspect "${image}:v0.7.0" --format '{{.Manifest.Digest}}'
+$digest = crane digest "${image}:v0.7.0"
 if ($LASTEXITCODE -ne 0) { throw "tag v0.7.0 not found" }
-docker buildx imagetools create --tag "${image}:prod" "${image}@${digest}"
-docker buildx imagetools inspect "${image}:prod" --format '{{.Manifest.Digest}}'   # = $digest
-docker logout ghcr.io
+crane tag "${image}:v0.7.0" prod
+crane digest "${image}:prod"                       # must equal $digest
+crane auth logout ghcr.io
 ```
 
 **Roll back everything** (bundle + image): *Actions → deploy-prod → Run workflow* with the older

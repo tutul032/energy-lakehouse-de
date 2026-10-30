@@ -2,7 +2,8 @@
 
 Parses .github/workflows/*.yml and checks:
 - deploy-prod runs publish-image -> deploy (production approval) -> promote-image, publishes
-  :<tag> and :sha-<short sha> after a Trivy scan, and promotes by digest (imagetools, no build);
+  :<tag> and :sha-<short sha> after a Trivy scan, records the registry digest (crane digest)
+  and promotes with `crane tag` of that digest (crane pinned, no imagetools create, no build);
 - `packages: write` appears only on publish-image and promote-image, never workflow-wide;
 - no `uses:` reference (job or step) points at @main or @master, no checkout@v4 /
   upload-artifact@v4 (Node 20), no `ubuntu-latest` runner;
@@ -23,6 +24,8 @@ PACKAGE_WRITERS = {("deploy-prod.yml", "publish-image"), ("deploy-prod.yml", "pr
 DOCKER_RUN_RE = re.compile(r"\bdocker\s+run\b")
 CONTAINER_ENV_FLAG_RE = re.compile(r"(?:^|\s)(?:-e|--env|--env-file)(?:[\s=]|$)")
 BRANCH_REFS = ("@main", "@master")
+SETUP_CRANE = "imjasonh/setup-crane@"
+RELEASE_TAG_RE = re.compile(r"^v\d+(?:\.\d+){1,2}$")  # v0.7, v0.22.1
 OUTDATED_ACTION_RE = re.compile(r"^actions/(?:checkout|upload-artifact)@v4(?:\.|$)")
 
 
@@ -147,11 +150,39 @@ def test_publish_image_scans_then_pushes_both_tags(deploy_prod):
     assert 'SOURCE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"' in build
 
 
-def test_promote_image_retags_digest_without_rebuild(deploy_prod):
+def assert_crane_pinned(job: dict) -> None:
+    """One setup-crane step at a release tag, installing the crane release in CRANE_VERSION."""
+    (step,) = [s for s in job["steps"] if (s.get("uses") or "").startswith(SETUP_CRANE)]
+    assert RELEASE_TAG_RE.match(step["uses"].removeprefix(SETUP_CRANE)), step["uses"]
+    assert step["with"]["version"] == "${{ env.CRANE_VERSION }}"
+    assert RELEASE_TAG_RE.match(job["env"]["CRANE_VERSION"]), job["env"]["CRANE_VERSION"]
+
+
+def test_assert_crane_pinned_rejects_latest_release():
+    step = {"uses": f"{SETUP_CRANE}v0.7", "with": {"version": "${{ env.CRANE_VERSION }}"}}
+    assert_crane_pinned({"env": {"CRANE_VERSION": "v0.22.1"}, "steps": [step]})
+    with pytest.raises(AssertionError):
+        assert_crane_pinned({"env": {"CRANE_VERSION": "latest-release"}, "steps": [step]})
+
+
+def test_publish_image_records_registry_digest(deploy_prod):
+    job = deploy_prod["jobs"]["publish-image"]
+    assert_crane_pinned(job)
+    (step,) = [s for s in job["steps"] if s.get("id") == "digest"]
+    assert 'crane digest "${IMAGE}:${TAG}"' in step["run"]
+    assert "imagetools" not in step["run"]
+
+
+def test_promote_image_crane_tags_digest_without_rebuild(deploy_prod):
     job = deploy_prod["jobs"]["promote-image"]
+    assert_crane_pinned(job)
     script = "\n".join(s.get("run") or "" for s in job["steps"])
-    assert "docker buildx imagetools create" in script
-    assert '"${IMAGE}:prod" "${IMAGE}@${DIGEST}"' in script
+    assert "imagetools create" not in script
+    assert 'crane tag "${IMAGE}@${DIGEST}" prod' in script
+    # Both checks: the version tag before and :prod after, against the recorded digest.
+    assert 'crane digest "${IMAGE}:${TAG}"' in script
+    assert 'crane digest "${IMAGE}:prod"' in script
+    assert script.count('== "${DIGEST}"') == 2
     assert not re.search(r"\bdocker build\s", script) and "docker push" not in script
     assert job["env"]["DIGEST"] == "${{ needs.publish-image.outputs.digest }}"
 
