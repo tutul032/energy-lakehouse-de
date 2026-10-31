@@ -106,7 +106,7 @@ jobs:
       - run: tflint --format compact
 
   # Dev container (.devcontainer/): build it with its pinned image and features, run
-  # postCreateCommand (uv, uv sync, pre-commit install), then the unit tests inside it.
+  # postCreateCommand (uv, uv sync), then the unit tests inside it.
   devcontainer:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

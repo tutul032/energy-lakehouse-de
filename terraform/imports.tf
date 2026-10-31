@@ -5,7 +5,13 @@
 #   databricks_service_principal  SCIM id of the service principal (workspace id, not application id)
 #   databricks_group              SCIM id of the group
 #   databricks_grant              <securable_type>/<securable_name>/<principal>
-# The IDs are not secret. Import blocks stay valid after the first apply (no-op once in state).
+# The IDs are not secret.
+#
+# The blocks stay after the first apply on purpose: once a resource is in state, its import block
+# is a no-op (plan shows nothing to import). Keeping them means a lost or fresh local state is
+# re-adopted by the next plan instead of trying to create objects that already exist, and
+# tests/test_terraform.py requires one per managed resource. Remove a block together with its
+# resource, as for the refresh SP's former USE_SCHEMA grant on energy_dev.
 
 import {
   to = databricks_service_principal.refresh
@@ -65,11 +71,6 @@ import {
 import {
   to = databricks_grant.raw_schema_use["cicd"]
   id = "schema/workspace.energy_raw/7d0f1e32-4a86-42e2-b352-461dae1b3634"
-}
-
-import {
-  to = databricks_grant.dev_schema_refresh
-  id = "schema/workspace.energy_dev/e1370f9f-0819-48ba-92f0-365c18361518"
 }
 
 import {

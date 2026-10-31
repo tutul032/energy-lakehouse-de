@@ -8,8 +8,8 @@ inside. Checks:
 - every feature reference has a major or exact semver tag (local `./features/...` excepted), tool
   versions in feature options are pinned (never latest), and the local Databricks CLI feature
   matches the CLI version CI installs (databricks/setup-cli@vX.Y.Z) when CI pins one;
-- postCreateCommand installs a pinned uv (same as the extractor Dockerfile), then `uv sync` and
-  `uv run pre-commit install`;
+- postCreateCommand installs a pinned uv (same as the extractor Dockerfile), then `uv sync`, and
+  never installs git hooks (they would overwrite the host's hook in a shared .git/hooks);
 - remoteUser is set and not root; no mounts of credential files; no env/option names or values
   that look like tokens/secrets.
 """
@@ -196,8 +196,9 @@ def test_post_create_pins_uv_and_sets_up_project(config):
     assert 'pipx install "uv==${UV_VERSION}"' in script
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f"ghcr.io/astral-sh/uv:{match.group(1)}" in dockerfile, "uv differs from Dockerfile"
-    order = [script.index(s) for s in ("pipx install", "uv sync", "uv run pre-commit install")]
-    assert order == sorted(order)
+    assert script.index("pipx install") < script.index("uv sync")
+    commands = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
+    assert not any("pre-commit install" in line for line in commands), "installs git hooks"
 
 
 def test_shell_scripts_use_lf():

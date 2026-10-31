@@ -20,7 +20,7 @@ Dockerfile                  # extractor image (multi-stage: uv builds wheel; pyt
 .devcontainer/              # VS Code dev container (see .devcontainer/README.md)
   devcontainer.json         #   build Dockerfile + features (major tags), remoteUser vscode, venv outside workspace
   Dockerfile                #   FROM python base image (major tag), removes the broken Yarn apt source
-  post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory, pre-commit install
+  post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory (no hook install)
   features/databricks-cli/  #   local feature: official setup-cli install script at a pinned version
 terraform/                  # UC platform (ADR 0010): schemas, landing volume, SPs, group, grants
   versions.tf               #   Terraform ~> 1.16.6, databricks provider 1.139.1 (+ .terraform.lock.hcl)
