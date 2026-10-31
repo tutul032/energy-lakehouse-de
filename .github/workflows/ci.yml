@@ -80,6 +80,31 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "${TRIVY_IMAGE}" \
             image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE}"
 
+  # Platform Terraform (terraform/): static checks only. No credentials and no backend, so this
+  # never plans or applies; plan/apply run locally (docs/adr/0010-terraform-scope.md).
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      TERRAFORM_VERSION: 1.16.6
+      TFLINT_VERSION: v0.64.0
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false -input=false -lockfile=readonly
+      - run: terraform validate
+      - uses: terraform-linters/setup-tflint@v6.3.2
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+      - run: tflint --format compact
+
   # Dev container (.devcontainer/): build it with its pinned image and features, run
   # postCreateCommand (uv, uv sync, pre-commit install), then the unit tests inside it.
   devcontainer:

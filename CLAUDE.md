@@ -22,6 +22,12 @@ Dockerfile                  # extractor image (multi-stage: uv builds wheel; pyt
   Dockerfile                #   FROM python base image (major tag), removes the broken Yarn apt source
   post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory, pre-commit install
   features/databricks-cli/  #   local feature: official setup-cli install script at a pinned version
+terraform/                  # UC platform (ADR 0010): schemas, landing volume, SPs, group, grants
+  versions.tf               #   Terraform ~> 1.16.6, databricks provider 1.139.1 (+ .terraform.lock.hcl)
+  providers.tf              #   host = var.databricks_host; auth from the environment only
+  variables.tf, schemas.tf, volumes.tf, identities.tf, grants.tf
+  imports.tf                #   import blocks for the existing objects (zero-diff adoption)
+  terraform.tfvars.example  #   copy to terraform.tfvars (gitignored)
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
   energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
 src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel, see "Wheel")
@@ -80,6 +86,7 @@ docs/data-products/         # generated data product pages (one per contract; do
 .github/workflows/ci.yml    # PR + push master (+ workflow_call): job ci (lint, test, bundle validate
                             #   staging/prod) + job docker (hadolint, build, smoke extract, Trivy)
                             #   + job devcontainer (devcontainers/ci: build, uv run pytest -q inside)
+                            #   + job terraform (fmt -check, init -backend=false, validate, tflint)
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
 .github/workflows/deploy-prod.yml    # release v*: publish-image (build, Trivy, push :<tag>/:sha-<sha>)
                                      #   -> deploy (env production approval) -> promote-image (:prod)
@@ -88,6 +95,8 @@ docs/data-products/         # generated data product pages (one per contract; do
 tests/test_workflows.py              # deploy-prod job order/permissions, daily-refresh image + no secrets,
                                      #   pinned actions (no @main/@master, no checkout/upload-artifact
                                      #   @v4), runs-on ubuntu-24.04 (never ubuntu-latest)
+tests/test_terraform.py              # singular grants only, prevent_destroy, no secrets, pinned +
+                                     #   locked provider, versions = CI = dev container, all imported
 ```
 
 ## Local setup
@@ -431,6 +440,18 @@ builds its own tables in its own schema.
   free` (callback port 8020 forwarded) and `gh auth login`. When bumping a version, keep these
   equalities (`tests/test_devcontainer.py`). Inside: `docker run` without `-it` loses output
   (socat proxy), `-v` paths are host paths.
+- **Terraform (`terraform/`, ADR 0010):** platform only: schemas, the landing volume, the two
+  SPs and `energy-consumers` (entitlements, no membership), and their catalog/schema/volume
+  grants. Only `databricks_grant` (singular, one principal), never `databricks_grants` or
+  `databricks_permissions`; never the `_workspace_users` catalog grant, consumer-group
+  `USE SCHEMA` or table grants (`apply_contracts`), or bundle resources. `prevent_destroy` on
+  schemas, the volume and identities; no OAuth secrets/tokens; provider auth from the environment
+  (`DATABRICKS_CONFIG_PROFILE=free`), host from `var.databricks_host`. Local state (gitignored).
+  The existing objects are adopted with `import` blocks; the plan must stay zero-diff unless a
+  PR changes the platform on purpose. Terraform/tflint versions are equal in `versions.tf`,
+  ci.yml job `terraform` (fmt, `init -backend=false`, validate, tflint; no credentials, never
+  plan/apply) and the dev container feature (`tests/test_terraform.py`). Plan/apply only in the
+  dev container, by the user; never run `terraform apply` on the user's behalf.
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.
