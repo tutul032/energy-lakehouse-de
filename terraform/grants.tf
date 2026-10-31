@@ -1,5 +1,7 @@
 # Platform grants, one databricks_grant per securable and principal: authoritative only for that
-# principal on that securable, so grants made elsewhere stay untouched. Not managed here (see
+# principal on that securable, so grants made elsewhere stay untouched. The refresh SP gets no
+# grant on the target schemas: it only writes to the landing volume and triggers the prod job,
+# which runs as the CI/CD SP. Not managed here (see
 # docs/adr/0010-terraform-scope.md): the _workspace_users catalog grant, energy-consumers
 # USE_SCHEMA on the target schemas and all table grants (apply_contracts), bundle resources.
 locals {
@@ -22,12 +24,6 @@ resource "databricks_grant" "raw_schema_use" {
 
   schema     = databricks_schema.raw.id
   principal  = each.value
-  privileges = ["USE_SCHEMA"]
-}
-
-resource "databricks_grant" "dev_schema_refresh" {
-  schema     = databricks_schema.target["dev"].id
-  principal  = databricks_service_principal.refresh.application_id
   privileges = ["USE_SCHEMA"]
 }
 

@@ -10,6 +10,7 @@ Operational fixes for energy-lakehouse-de. Commands are PowerShell-compatible.
 - [Release checklist](#release-checklist)
 - [Run the extractor in Docker](#run-the-extractor-in-docker)
 - [Extractor image in prod](#extractor-image-in-prod)
+- [Change platform grants](#change-platform-grants)
 
 ## Daily refresh failed
 
@@ -39,7 +40,7 @@ databricks jobs get-run-output <task-run-id> -p free    # error message and trac
 
 | Task | Typical cause | Fix |
 |---|---|---|
-| `run_pipeline` | Expectation `valid_timestamp` failed (malformed landing file); missing `READ VOLUME` for the job's run-as identity on the landing volume. | Find the file in the pipeline event log, move it out of the landing volume, rerun. Re-grant `READ VOLUME`. |
+| `run_pipeline` | Expectation `valid_timestamp` failed (malformed landing file); missing `READ VOLUME` for the job's run-as identity on the landing volume. | Find the file in the pipeline event log, move it out of the landing volume, rerun. Missing grant: restore it through Terraform ([Change platform grants](#change-platform-grants)). |
 | `quality_checks` | `gold_energy_hourly` older than 72 h (extraction stopped, or SMARD published late); no weather in the last 7 days; an empty silver table. | Check the extract step and the `extract-logs-<run id>` workflow artifact. If SMARD is late, wait for the next run. |
 | `apply_contracts` | A consumer group in a contract (e.g. `energy-consumers`) does not exist, so `GRANT` fails. | Create the group in the workspace, or remove it from the contract (PATCH bump). |
 | `verify_contracts` | Schema drift, a quality rule above its allowed violation %, or freshness SLA missed. The task lists every failure. | Schema: fix the pipeline or the contract (ADR 0005). Freshness: same as `quality_checks`. |
@@ -311,3 +312,35 @@ tag. `publish-image` reuses that tag's digest, `deploy` redeploys that code afte
 `GITHUB_TOKEN` gives this repository access; check *Package settings → Manage Actions access*
 lists `energy-lakehouse-de` (Read is enough for `daily-refresh`, Write for `deploy-prod`). A
 `denied` / `unauthorized` on pull means this entry is missing.
+
+## Change platform grants
+
+**Changing platform grants = edit `terraform/`, plan, review, apply. Never `GRANT` / `REVOKE` by
+hand** (UI, SQL editor, CLI). Platform grants are the catalog, schema and volume grants of the
+service principals and the platform owner (`terraform/grants.tf`, ADR 0010). A grant changed by
+hand is unreviewed drift: the next plan shows it, and the next apply may undo it.
+
+Not platform grants, so not in Terraform: consumer groups' `USE SCHEMA` and table `SELECT` come
+from the contracts (`consumers` in `contracts/<table>.yaml`, granted by `apply_contracts`); job,
+pipeline and dashboard permissions come from the bundle.
+
+1. **Edit** `terraform/grants.tf` on a branch: one `databricks_grant` per securable and
+   principal (never `databricks_grants`). A grant that already exists in the workspace also gets
+   an `import` block in `terraform/imports.tf`; a removed grant loses its import block too.
+2. **Check:** `terraform fmt -check`, `terraform validate`, `tflint` and
+   `uv run python -m pytest` (CI runs the same, without credentials).
+3. **Plan** in the dev container (logged in as profile `free`, see `.devcontainer/README.md`):
+
+   ```bash
+   cd terraform
+   DATABRICKS_CONFIG_PROFILE=free terraform plan -out=change.tfplan
+   ```
+
+   The plan must show only the intended `databricks_grant` changes (destroy = REVOKE for that
+   principal on that securable) and nothing on schemas, the volume or identities.
+4. **Review:** paste the plan summary into the PR description; merge after review.
+5. **Apply** the reviewed plan file: `DATABRICKS_CONFIG_PROFILE=free terraform apply
+   change.tfplan`. Then run `terraform plan` again: it must report no changes.
+
+If a grant was changed by hand anyway, `terraform plan` shows it: revert it with an apply, or, if
+it is wanted, add it to `terraform/` through the steps above.

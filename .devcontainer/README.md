@@ -13,7 +13,8 @@ the same container and runs the tests in it (`ci.yml`, job `devcontainer`).
 | Docker CLI | feature default (latest release at build time), using the host daemon | feature `docker-outside-of-docker:1` |
 
 After the container is created, `post-create.sh` runs `uv sync --locked` (venv in
-`/home/vscode/.venvs/energy-lakehouse-de`, outside the workspace) and `uv run pre-commit install`.
+`/home/vscode/.venvs/energy-lakehouse-de`, outside the workspace). It does not install git hooks
+(see [Git hooks](#git-hooks)).
 You work as the non-root user `vscode`. No credentials are copied or mounted into the container.
 
 ## Open it
@@ -57,16 +58,25 @@ gh auth login --hostname github.com --git-protocol https --web
 gh auth status
 ```
 
+## Git hooks
+
+Run `uv run pre-commit install` on the machine you commit from, once per clone. The hook
+(`.git/hooks/pre-commit`) points at that machine's Python, and with a bind mount `.git/hooks` is
+shared between the host and the container, so there is only one hook. If you commit on Windows,
+install it on Windows; if you commit only inside the container (or use a container volume),
+install it there. `post-create.sh` does not install it, so creating or rebuilding the container
+never overwrites the host's hook.
+
 ## Known limitations (Windows)
 
 - **Slow file access on a bind mount.** `C:\` is mounted through Docker Desktop, so `uv sync`
   and `pytest` are noticeably slower than on WSL or Linux. For speed, use **Dev Containers: Clone
   Repository in Container Volume** (the repo then lives only in a Docker volume).
-- **Shared git hooks.** With a bind mount, `.git/hooks` belongs to both sides. The container's
-  `pre-commit install` points the hook at the container's Python, so a commit on the Windows
-  host then fails with "`pre-commit` not found". Back on the host, run `uv run pre-commit install`
-  again. A hook installed on Windows does not run in the container (CRLF, Windows path); rebuild
-  or rerun `uv run pre-commit install` inside. With a container volume this does not occur.
+- **Shared git hooks.** With a bind mount, `.git/hooks` belongs to both sides. A hook installed
+  on Windows does not run in the container (CRLF, Windows path), and one installed in the
+  container fails on Windows ("`pre-commit` not found"). Install it only where you commit (see
+  [Git hooks](#git-hooks)); if a commit fails this way, rerun `uv run pre-commit install` on that
+  side. With a container volume this does not occur.
 - **Git "dubious ownership".** Files from `C:\` show up as owned by root, so `post-create.sh`
   adds the workspace to `safe.directory` in the container's own `~/.gitconfig`.
 - **Line endings.** Shell scripts must be LF. `.gitattributes` forces `*.sh` to LF even with

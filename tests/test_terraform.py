@@ -4,6 +4,8 @@ Static checks on the .tf files (no Terraform needed; the ci.yml `terraform` job 
 and tflint). Checks:
 - grants only via databricks_grant (singular, one principal); never databricks_grants or
   databricks_permissions; never the _workspace_users catalog grant;
+- no databricks_grant targets the consumer group energy-consumers: its USE SCHEMA and table
+  grants come from apply_contracts (ADR 0010);
 - every databricks_schema / databricks_volume has `prevent_destroy = true`;
 - no secrets: no token/password/client_secret arguments, no OAuth secret resources, no `profile`
   or hardcoded host in the provider block;
@@ -22,12 +24,17 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TF_DIR = REPO_ROOT / "terraform"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-BLOCK_RE = re.compile(r"^(resource|import|provider|terraform)\b([^{\n]*)\{", re.MULTILINE)
+BLOCK_RE = re.compile(
+    r"^(resource|import|provider|terraform|locals|variable)\b([^{\n]*)\{", re.MULTILINE
+)
 SECRET_ARG_RE = re.compile(
     r"^\s*(token|password|client_secret|azure_client_secret|google_credentials)\s*=",
     re.MULTILINE | re.IGNORECASE,
 )
 SECRET_VALUE_RE = re.compile(r"dapi[0-9a-f]{20,}|dose[0-9a-f]{20,}", re.IGNORECASE)
+CONSUMERS_GROUP = "energy-consumers"
+# Every way a .tf file can name the consumer group.
+CONSUMER_REFS = (f'"{CONSUMERS_GROUP}"', "var.consumers_group", "databricks_group.consumers")
 FORBIDDEN_RESOURCES = {
     "databricks_grants",
     "databricks_permissions",
@@ -84,6 +91,16 @@ def devcontainer_terraform_feature() -> dict:
     return options
 
 
+def grant_principal_sources(tf_blocks: list[tuple[str, list[str], str]]) -> dict[str, str]:
+    """databricks_grant name -> its body, plus the locals bodies if it references `local.`."""
+    local_bodies = "\n".join(body for kind, _, body in tf_blocks if kind == "locals")
+    return {
+        labels[1]: body + ("\n" + local_bodies if "local." in body else "")
+        for kind, labels, body in tf_blocks
+        if kind == "resource" and labels[0] == "databricks_grant"
+    }
+
+
 def test_blocks_parses_nested_braces():
     text = (
         'resource "a" "b" {\n  x = { y = 1 }\n  lifecycle {\n    z = 2\n  }\n}\n'
@@ -109,6 +126,31 @@ def test_grants_have_one_principal_and_skip_workspace_users():
         if kind == "resource" and labels[0] == "databricks_grant":
             assert len(re.findall(r"^\s*principal\s*=", body, re.MULTILINE)) == 1, labels
     assert "_workspace_users" not in strip_comments(tf_text())
+
+
+def test_grant_principal_sources_include_referenced_locals():
+    text = (
+        'locals {\n  sps = { a = "x" }\n}\n'
+        'resource "databricks_grant" "via_local" {\n  principal = local.sps["a"]\n}\n'
+        'resource "databricks_grant" "direct" {\n  principal = "y"\n}\n'
+    )
+    sources = grant_principal_sources(blocks(text))
+    assert 'a = "x"' in sources["via_local"]
+    assert 'a = "x"' not in sources["direct"]
+
+
+def test_consumers_group_is_not_granted_by_terraform():
+    """USE SCHEMA/table grants of energy-consumers belong to apply_contracts (ADR 0010)."""
+    tf_blocks = all_blocks()
+    (variable,) = [
+        body
+        for kind, labels, body in tf_blocks
+        if kind == "variable" and labels == ["consumers_group"]
+    ]
+    assert f'"{CONSUMERS_GROUP}"' in variable, "var.consumers_group must default to the group"
+    for name, source in grant_principal_sources(tf_blocks).items():
+        hits = [ref for ref in CONSUMER_REFS if ref in source]
+        assert not hits, f"databricks_grant.{name} targets {CONSUMERS_GROUP} via {hits}"
 
 
 @pytest.mark.parametrize("resource_type", ["databricks_schema", "databricks_volume"])

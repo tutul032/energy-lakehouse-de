@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev container postCreateCommand: pinned uv, project environment, git hooks.
+# Dev container postCreateCommand: pinned uv, project environment, git safe.directory.
 # Runs as remoteUser (vscode) in the workspace folder. The venv goes to $UV_PROJECT_ENVIRONMENT
 # (devcontainer.json), outside the bind-mounted workspace.
 set -euo pipefail
@@ -16,10 +16,9 @@ if ! git config --global --get-all safe.directory | grep -qxF "$PWD"; then
   git config --global --add safe.directory "$PWD"
 fi
 
-# Points .git/hooks/pre-commit at this container's Python. With a bind-mounted repo the hooks
-# folder is shared with the host: after working here, rerun `uv run pre-commit install` on the
-# host (see .devcontainer/README.md).
-uv run pre-commit install
+# No git hook install here: with a bind-mounted repo .git/hooks is shared with the host, and
+# installing would overwrite the host's hook with one that points at this container's Python.
+# Install it on the machine you commit from (see .devcontainer/README.md, "Git hooks").
 
 databricks -v
 gh --version | head -1
