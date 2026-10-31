@@ -25,3 +25,11 @@ Thumbs.db
 
 # Local landing data (SMARD extracts etc.)
 data/
+
+# Terraform (local state for now; never commit state or real variable files)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example

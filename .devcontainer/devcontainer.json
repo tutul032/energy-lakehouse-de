@@ -11,6 +11,11 @@
     // Official install script (databricks/setup-cli) at a pinned tag; same version as CI.
     "./features/databricks-cli": {
       "version": "1.23.0"
+    },
+    // Terraform (terraform/) and tflint; same versions as the ci.yml `terraform` job.
+    "ghcr.io/devcontainers/features/terraform:1": {
+      "version": "1.16.6",
+      "tflint": "0.64.0"
     }
   },
   "remoteUser": "vscode",
