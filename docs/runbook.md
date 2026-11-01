@@ -109,13 +109,13 @@ GROUP BY ALL;
 
 ## Secret rotation
 
-OAuth secrets of service principals expire. Keep this table current (placeholders until filled
-in).
+OAuth secrets of service principals expire. Keep this table current (dates in UTC; check with
+`databricks service-principal-secrets-proxy list <sp-id> -p free`).
 
 | GitHub secret | Service principal | Used by | Created | Expires | Rotate by |
 |---|---|---|---|---|---|
-| `DATABRICKS_CLIENT_SECRET` | refresh SP (`refresh_sp_app_id`) | `daily-refresh.yml` | `YYYY-MM-DD` | `YYYY-MM-DD` | `YYYY-MM-DD` (expiry − 14 days) |
-| `DATABRICKS_CICD_CLIENT_SECRET` | CI/CD SP (`cicd_sp_app_id`) | `ci.yml`, `deploy-staging.yml`, `deploy-prod.yml` | `YYYY-MM-DD` | `YYYY-MM-DD` | `YYYY-MM-DD` (expiry − 14 days) |
+| `DATABRICKS_CLIENT_SECRET` | refresh SP (`refresh_sp_app_id`) | `daily-refresh.yml` | 2026-10-19 | 2028-10-17 | **2028-10-03** (expiry − 14 days) |
+| `DATABRICKS_CICD_CLIENT_SECRET` | CI/CD SP (`cicd_sp_app_id`) | `ci.yml`, `deploy-staging.yml`, `deploy-prod.yml` | 2026-10-30 | 2027-10-30 | **2027-10-16** (expiry − 14 days) |
 
 `DATABRICKS_HOST` and the `*_CLIENT_ID` secrets do not expire.
 

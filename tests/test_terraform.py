@@ -11,7 +11,9 @@ and tflint). Checks:
   or hardcoded host in the provider block;
 - provider pinned to an exact version that matches .terraform.lock.hcl; Terraform and tflint
   versions equal in versions.tf, ci.yml and the dev container;
-- every managed resource has an import block; .gitignore keeps state and tfvars out of git.
+- every managed resource has an import block; .gitignore keeps state and tfvars out of git;
+- the committed .claude/settings.json denies terraform apply/destroy/state/import to Claude Code
+  (plan/apply stay with the user in the dev container), and .gitignore does not ignore it.
 """
 
 import json
@@ -35,6 +37,13 @@ SECRET_VALUE_RE = re.compile(r"dapi[0-9a-f]{20,}|dose[0-9a-f]{20,}", re.IGNORECA
 CONSUMERS_GROUP = "energy-consumers"
 # Every way a .tf file can name the consumer group.
 CONSUMER_REFS = (f'"{CONSUMERS_GROUP}"', "var.consumers_group", "databricks_group.consumers")
+CLAUDE_SETTINGS = REPO_ROOT / ".claude" / "settings.json"
+DENIED_TERRAFORM = {
+    "Bash(terraform apply:*)",
+    "Bash(terraform destroy:*)",
+    "Bash(terraform state:*)",
+    "Bash(terraform import:*)",
+}
 FORBIDDEN_RESOURCES = {
     "databricks_grants",
     "databricks_permissions",
@@ -231,3 +240,19 @@ def test_gitignore_keeps_state_and_tfvars_out():
     lines = set((REPO_ROOT / ".gitignore").read_text("utf-8").splitlines())
     assert {".terraform/", "*.tfstate", "*.tfstate.*", "*.tfvars", "!*.tfvars.example"} <= lines
     assert (TF_DIR / "terraform.tfvars.example").is_file()
+
+
+def test_claude_settings_deny_terraform_writes():
+    settings = json.loads(CLAUDE_SETTINGS.read_text("utf-8"))
+    deny = set(settings.get("permissions", {}).get("deny", []))
+    assert DENIED_TERRAFORM <= deny, f"missing deny rules: {sorted(DENIED_TERRAFORM - deny)}"
+
+
+def test_gitignore_keeps_claude_settings_tracked():
+    lines = {
+        line.strip()
+        for line in (REPO_ROOT / ".gitignore").read_text("utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    claude_rules = {line for line in lines if ".claude" in line}
+    assert claude_rules <= {".claude/settings.local.json"}, sorted(claude_rules)

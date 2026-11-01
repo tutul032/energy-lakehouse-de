@@ -8,23 +8,85 @@ release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after
 ### Added
 - VS Code dev container (`.devcontainer/`): pinned Python 3.12 image, uv, Databricks CLI, GitHub
   CLI, docker-outside-of-docker; ci.yml job `devcontainer` runs the tests inside it;
-  `.gitattributes` keeps `*.sh` LF.
-- Portfolio documentation: README, ADRs 0002–0009, runbook (failed refresh, safe rerun, DST,
-  secret rotation, release checklist), tutorial index, this changelog.
-- Extractor Docker image (`Dockerfile`, `.dockerignore`): multi-stage, non-root, extract-only;
-  ci.yml job `docker` (hadolint, build, smoke extract, Trivy); `extract_local --out` defaults to
-  `$EXTRACT_OUT`.
+  `.gitattributes` keeps `*.sh` LF. ([#20])
+- Terraform for the Unity Catalog platform (`terraform/`, ADR 0010): schemas, landing volume,
+  service principals, `energy-consumers` and their catalog/schema/volume grants, adopted with
+  `import` blocks and a zero-diff first plan; additive `databricks_grant` only, `prevent_destroy`,
+  no secrets; ci.yml job `terraform` (fmt, validate, tflint, no credentials). ([#21])
+- `.claude/settings.json`: Claude Code may not run `terraform apply`, `destroy`, `state` or
+  `import`; guarded by `tests/test_terraform.py`.
 
+### Changed
+- Removed the refresh SP's unused `USE_SCHEMA` on `energy_dev`, the first change made through
+  Terraform; Terraform never grants to consumer groups (`apply_contracts` does). Runbook:
+  "Change platform grants". ([#22])
+
+## [v1.3.2] - 2026-10-30 — completeness severity, exact-digest promotion
+
+### Fixed
+- `completeness` is critical only for `total_load` and `day_ahead_price`
+  (`COMPLETENESS_CRITICAL_SERIES`: forecast inputs and `is_complete`); gaps in generation series
+  are warnings. ([#18])
+- `promote-image` tags `:prod` with `crane tag` on the published manifest, and digests are read
+  with `crane digest`. `docker buildx imagetools create` wrapped the manifest in a new index, so
+  `:prod` got a different digest and the v1.3.1 `promote-image` job failed its digest check
+  (the bundle deploy itself had succeeded). ([#19])
+
+## [v1.3.1] - 2026-10-29 — pin runner image and actions, cleanup
+
+### Changed
+- Workflows run on `ubuntu-24.04` (not `ubuntu-latest`) and use pinned action versions
+  (`actions/checkout@v7.0.1`, `actions/upload-artifact@v7.0.2`); `tests/test_workflows.py` guards
+  both. ([#17])
+
+### Removed
+- Leftover `hello_job` and `extract_smard_job` resources, `src/notebooks/hello.py` and unused
+  `weather.fetch`.
+
+### Known issue
+- `promote-image` failed: `:prod` was moved to a new index around the v1.3.1 manifest, not to
+  the published digest, so the digest check failed. Fixed in v1.3.2.
+
+## [v1.3.0] - 2026-10-29 — extractor image on GHCR, promoted to prod
+
+Completes the GHCR work of v1.2.0: that release was created before PR B ([#16]) was merged, so
+v1.3.0 carries the same title.
+
+### Changed
+- `databricks/setup-cli` pinned to `v1.23.0` in all workflows instead of `@main`;
+  `tests/test_workflows.py` fails on any `uses:` reference to `@main` / `@master`. ([#16])
+
+## [v1.2.0] - 2026-10-28 — extractor image on GHCR, promoted to prod
+
+Created before PR B ([#16]) was merged; contains PR A ([#15]) only. See v1.3.0.
+
+### Added
 - `deploy-prod.yml`: `publish-image` (build, Trivy, push `energy-extractor:<tag>` and
   `:sha-<short sha>` to GHCR) before the approval, `promote-image` (retag the digest as `:prod`)
-  after the deploy. Runbook: which image prod ran, extractor rollback.
+  after the deploy. Runbook: which image prod ran, extractor rollback. ([#15])
 
 ### Changed
 - `daily-refresh.yml` extracts with the `energy-extractor:prod` container (digest logged; no
   Databricks credentials in the container, DATABRICKS_* only on the upload/job steps);
   `sync_landing.sh` gains `SKIP_EXTRACT=1`; permissions `contents: read`, `packages: read`.
+
+## [v1.1.0] - 2026-10-28 — containerised extractor, ml extra
+
+### Added
+- Extractor Docker image (`Dockerfile`, `.dockerignore`): multi-stage, non-root, extract-only;
+  ci.yml job `docker` (hadolint, build, smoke extract, Trivy); `extract_local --out` defaults to
+  `$EXTRACT_OUT`. ([#14])
+- README screenshots. ([#13])
+
+### Changed
 - Wheel dependencies: base = requests, pydantic, pyyaml; holidays, scikit-learn, mlflow moved to
   the `ml` extra (job environments keep their exact pins). certifi 2026.10.23 (GHSA-6q48-6c7w-9gw2).
+
+## [v1.0.0] - 2026-10-27 — Project 1 complete
+
+### Added
+- Portfolio documentation: README, ADRs 0002–0009, runbook (failed refresh, safe rerun, DST,
+  secret rotation, release checklist), tutorial index, this changelog. ([#11], [#12])
 
 ## [v0.6.1] - 2026-10-27 — prod dashboard drift handling
 
@@ -128,7 +190,13 @@ The data quality work shipped in v0.4.1.
 - Use the CI/CD service principal's application ID (not the secret); test guard against secrets
   and non-UUID IDs. ([#3])
 
-[Unreleased]: https://github.com/tutul032/energy-lakehouse-de/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.3.2...HEAD
+[v1.3.2]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.3.1...v1.3.2
+[v1.3.1]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.3.0...v1.3.1
+[v1.3.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.2.0...v1.3.0
+[v1.2.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.1.0...v1.2.0
+[v1.1.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v1.0.0...v1.1.0
+[v1.0.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v0.6.1...v1.0.0
 [v0.6.1]: https://github.com/tutul032/energy-lakehouse-de/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/tutul032/energy-lakehouse-de/compare/v0.4.1...v0.5.0
@@ -148,3 +216,15 @@ The data quality work shipped in v0.4.1.
 [#8]: https://github.com/tutul032/energy-lakehouse-de/pull/8
 [#9]: https://github.com/tutul032/energy-lakehouse-de/pull/9
 [#10]: https://github.com/tutul032/energy-lakehouse-de/pull/10
+[#11]: https://github.com/tutul032/energy-lakehouse-de/pull/11
+[#12]: https://github.com/tutul032/energy-lakehouse-de/pull/12
+[#13]: https://github.com/tutul032/energy-lakehouse-de/pull/13
+[#14]: https://github.com/tutul032/energy-lakehouse-de/pull/14
+[#15]: https://github.com/tutul032/energy-lakehouse-de/pull/15
+[#16]: https://github.com/tutul032/energy-lakehouse-de/pull/16
+[#17]: https://github.com/tutul032/energy-lakehouse-de/pull/17
+[#18]: https://github.com/tutul032/energy-lakehouse-de/pull/18
+[#19]: https://github.com/tutul032/energy-lakehouse-de/pull/19
+[#20]: https://github.com/tutul032/energy-lakehouse-de/pull/20
+[#21]: https://github.com/tutul032/energy-lakehouse-de/pull/21
+[#22]: https://github.com/tutul032/energy-lakehouse-de/pull/22
