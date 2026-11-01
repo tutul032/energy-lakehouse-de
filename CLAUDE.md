@@ -17,6 +17,7 @@ databricks.yml              # bundle root: variables, whl artifact (energy_lakeh
 Dockerfile                  # extractor image (multi-stage: uv builds wheel; python slim, user app)
 .dockerignore               # build context = pyproject.toml, uv.lock, README.md, package, contracts
 .gitattributes              # *.sh eol=lf (scripts run on Linux: CI, dev container bind mount)
+.claude/settings.json       # shared Claude Code settings: deny terraform apply/destroy/state/import
 .devcontainer/              # VS Code dev container (see .devcontainer/README.md)
   devcontainer.json         #   build Dockerfile + features (major tags), remoteUser vscode, venv outside workspace
   Dockerfile                #   FROM python base image (major tag), removes the broken Yarn apt source

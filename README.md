@@ -28,7 +28,7 @@ flowchart LR
     OM["Open-Meteo<br/>weather + forecast"]
   end
   subgraph GHA["GitHub Actions, 05:17 UTC"]
-    EX["extract raw JSON<br/>upload + verify"]
+    EX["extractor container (GHCR)<br/>upload + verify"]
   end
   subgraph DBX["Databricks Free Edition: serverless, Unity Catalog"]
     VOL[("UC volume<br/>energy_raw.landing")]
@@ -102,7 +102,9 @@ read the same raw files. Design decisions are recorded in [docs/adr/](docs/adr/)
 | Area | Tools |
 |---|---|
 | Platform | Databricks Free Edition (serverless), Unity Catalog, volumes |
-| Ingestion | Python (`requests`) in GitHub Actions, Auto Loader |
+| Ingestion | Python (`requests`) in the extractor container ([GHCR](https://github.com/tutul032/energy-lakehouse-de/pkgs/container/energy-extractor)) on GitHub Actions, Auto Loader |
+| Containers | Docker (multi-stage, non-root), GHCR, hadolint, Trivy, crane, VS Code dev container |
+| Infrastructure as code | Terraform (databricks provider), tflint |
 | Transformation | Lakeflow Spark Declarative Pipelines (PySpark), expectations |
 | Orchestration | Lakeflow Jobs, GitHub Actions (schedule, CI/CD) |
 | Data contracts | YAML + pydantic, Unity Catalog comments, tags and grants |
@@ -177,6 +179,20 @@ Raw data is not stored in this repository; it is downloaded by the extractor.
    per-target name prefixes and private bundle roots, and dashboard drift in prod is handled with
    an opt-in forced deploy ([ADR 0003](docs/adr/0003-shared-raw-zone-schema-per-environment.md),
    [runbook](docs/runbook.md#dashboard-modified-remotely)).
+6. **Containers:** extraction runs in a multi-stage, non-root image with hash-pinned
+   dependencies and no Databricks credentials; it is scanned with Trivy, published to
+   [GHCR](https://github.com/tutul032/energy-lakehouse-de/pkgs/container/energy-extractor) per release and promoted to `:prod` by exact digest only after the prod
+   deploy, so the daily refresh runs the image that was approved
+   ([Dockerfile](Dockerfile), [deploy-prod.yml](.github/workflows/deploy-prod.yml),
+   [runbook](docs/runbook.md#extractor-image-in-prod)). The dev container runs the same test
+   suite in CI ([.devcontainer/](.devcontainer/README.md)).
+7. **Infrastructure as code:** the hand-made Unity Catalog platform (schemas, landing volume,
+   service principals, consumer group, their grants) was adopted into Terraform with `import`
+   blocks and a zero-diff first plan; later changes go through a reviewed plan, and
+   `terraform plan` shows drift from changes made in the UI. Grants are additive
+   (`databricks_grant` only), consumer grants stay with the contracts
+   ([terraform/](terraform/), [ADR 0010](docs/adr/0010-terraform-scope.md),
+   [runbook](docs/runbook.md#change-platform-grants)).
 
 ## Known limitations
 

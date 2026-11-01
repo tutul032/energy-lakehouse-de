@@ -16,6 +16,8 @@ template: Goal, Prerequisites, Steps, Checkpoint, Troubleshooting, What you lear
 | 7 | Day-ahead forecast: leakage-safe features, MLflow, UC model registry, batch scoring, accuracy | pending | [`lab7-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab7-complete) |
 | 8 | ML-assisted data quality: anomaly detectors, severity design, injection test, LLM summary | pending | [`lab8-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab8-complete) |
 | 9 | AI/BI dashboard per environment and Genie agent with benchmarks | pending | [`lab9-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab9-complete) |
+| 11 | Dev container: pinned Python, uv, Databricks CLI and GitHub CLI, logins inside, tests in CI | pending | [`lab11-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab11-complete) |
+| 12 | Terraform: adopt the Unity Catalog platform with imports (zero-diff plan), additive grants, first reviewed change | pending | [`lab12-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab12-complete) |
 
 Related: [architecture decisions](../adr/), [runbook](../runbook.md),
 [data products](../data-products/).
