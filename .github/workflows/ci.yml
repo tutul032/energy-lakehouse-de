@@ -85,9 +85,14 @@ jobs:
   terraform:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Databricks platform root and the Azure bootstrap root (Lab 13); both offline, no credentials.
+    strategy:
+      fail-fast: false
+      matrix:
+        root: [terraform, infra/azure]
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ matrix.root }}
     env:
       TERRAFORM_VERSION: 1.16.6
       TFLINT_VERSION: v0.64.0
