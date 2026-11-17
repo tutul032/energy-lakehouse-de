@@ -56,6 +56,7 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["docs"]  # tutorials: illustrative snippets, not project code
 target-version = "py311"  # oldest runtime: requires-python
 
 [tool.ruff.lint]
