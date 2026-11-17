@@ -29,6 +29,9 @@ terraform/                  # UC platform (ADR 0010): schemas, landing volume, S
   variables.tf, schemas.tf, volumes.tf, identities.tf, grants.tf
   imports.tf                #   import blocks for the existing objects (zero-diff adoption)
   terraform.tfvars.example  #   copy to terraform.tfvars (gitignored)
+infra/azure/                # Azure bootstrap root (Lab 13): RG, tfstate storage, Key Vault, GitHub
+                            #   OIDC app/SP, budget; azurerm 5.12.0 + azuread 3.10.0; local state;
+                            #   README.md = bootstrap, teardown, exit plan
 resources/*.yml             # bundle resources (jobs, pipelines, dashboards)
   energy_market_de.dashboard.yml # AI/BI dashboard resource (file_path overridden per target)
 src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel, see "Wheel")
@@ -87,7 +90,8 @@ docs/data-products/         # generated data product pages (one per contract; do
 .github/workflows/ci.yml    # PR + push master (+ workflow_call): job ci (lint, test, bundle validate
                             #   staging/prod) + job docker (hadolint, build, smoke extract, Trivy)
                             #   + job devcontainer (devcontainers/ci: build, uv run pytest -q inside)
-                            #   + job terraform (fmt -check, init -backend=false, validate, tflint)
+                            #   + job terraform (matrix terraform, infra/azure: fmt -check,
+                            #   init -backend=false, validate, tflint)
 .github/workflows/deploy-staging.yml # push master: ci gate -> deploy staging -> run daily_refresh_job
 .github/workflows/deploy-prod.yml    # release v*: publish-image (build, Trivy, push :<tag>/:sha-<sha>)
                                      #   -> deploy (env production approval) -> promote-image (:prod)
@@ -98,6 +102,8 @@ tests/test_workflows.py              # deploy-prod job order/permissions, daily-
                                      #   @v4), runs-on ubuntu-24.04 (never ubuntu-latest)
 tests/test_terraform.py              # singular grants only, prevent_destroy, no secrets, pinned +
                                      #   locked provider, versions = CI = dev container, all imported
+tests/test_azure_infra.py            # infra/azure: pinned + locked providers, no backend, no secrets,
+                                     #   RG tags, private state storage, KV RBAC, OIDC subjects, az feature
 ```
 
 ## Local setup
@@ -453,6 +459,17 @@ builds its own tables in its own schema.
   ci.yml job `terraform` (fmt, `init -backend=false`, validate, tflint; no credentials, never
   plan/apply) and the dev container feature (`tests/test_terraform.py`). Plan/apply only in the
   dev container, by the user; never run `terraform apply` on the user's behalf.
+- **Azure foundation (`infra/azure/`, Lab 13):** own Terraform root, subscription of a free
+  account (credit until ~2026-12-15, exit plan in its README), region `swedencentral`. Local state
+  for this bootstrap root only; later Azure roots use the `azurerm` backend in its `tfstate`
+  container with `use_azuread_auth = true` (shared keys are off). Auth: `az login
+  --use-device-code` in the dev container (feature `azure-cli:1`, CLI pinned); GitHub via OIDC
+  (app `gh-energy-lakehouse`, federated subjects `pull_request` and `ref:refs/heads/master`, no
+  client secret, no subscription-wide role). No secrets in Terraform (no
+  `azurerm_key_vault_secret`, no app/SP passwords); secrets go into the vault with
+  `az keyvault secret set`. Every resource tagged `project`, `owner`, `cost-center`. Subscription
+  ID and alert e-mail only in the gitignored `terraform.tfvars`. Same Terraform version as
+  `terraform/`; plan/apply only by the user (`tests/test_azure_infra.py`).
 - Ruff line length 100; CI must pass `ruff check`, `ruff format --check`, `pytest`.
 - Do not run `databricks bundle deploy/run/destroy` on the user's behalf — the user runs
   checkpoints.

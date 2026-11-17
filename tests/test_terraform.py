@@ -53,9 +53,14 @@ FORBIDDEN_RESOURCES = {
 }
 
 
+LINE_COMMENT_RE = re.compile(r'("(?:[^"\\]|\\.)*")|\s*(?:#|//).*$')
+
+
 def strip_comments(text: str) -> str:
-    """Drop `#` and `//` line comments (no string in these files contains them)."""
-    return "\n".join(re.sub(r"\s*(#|//).*$", "", line) for line in text.splitlines())
+    """Drop `#` and `//` line comments; markers inside "strings" (e.g. https://) are kept."""
+    return "\n".join(
+        LINE_COMMENT_RE.sub(lambda m: m.group(1) or "", line) for line in text.splitlines()
+    )
 
 
 def blocks(text: str) -> list[tuple[str, list[str], str]]:
@@ -122,6 +127,7 @@ def test_blocks_parses_nested_braces():
 
 def test_strip_comments():
     assert strip_comments('x = 1 # note\n// all\ny = "a"') == 'x = 1\n\ny = "a"'
+    assert strip_comments('u = "https://x#y" # c') == 'u = "https://x#y"'
 
 
 def test_only_singular_grants():

@@ -11,6 +11,7 @@ the same container and runs the tests in it (`ci.yml`, job `devcontainer`).
 | Databricks CLI | 1.23.0 (same as CI) | local feature `features/databricks-cli` (official install script) |
 | GitHub CLI | feature default (latest release at build time) | feature `github-cli:1` |
 | Docker CLI | feature default (latest release at build time), using the host daemon | feature `docker-outside-of-docker:1` |
+| Azure CLI | 2.92.0 (`infra/azure/`, Lab 13) | feature `azure-cli:1` |
 
 After the container is created, `post-create.sh` runs `uv sync --locked` (venv in
 `/home/vscode/.venvs/energy-lakehouse-de`, outside the workspace). It does not install git hooks
@@ -28,7 +29,7 @@ Prerequisites: Docker Desktop running, VS Code with the *Dev Containers* extensi
 
    ```bash
    uv run pytest -q
-   databricks -v && gh --version && docker --version
+   databricks -v && gh --version && docker --version && az version
    ```
 
 After a change to `.devcontainer/`, run **Dev Containers: Rebuild Container**.
@@ -57,6 +58,22 @@ The `gh` CLI needs its own login, which is also stored only in the container:
 gh auth login --hostname github.com --git-protocol https --web
 gh auth status
 ```
+
+## Log in to Azure
+
+`infra/azure/` (Lab 13) uses Azure CLI authentication. Log in inside the container with the
+device code flow. It needs no callback port: you open the URL in the host browser and enter the
+code.
+
+```bash
+az login --use-device-code --tenant <tenant-id-or-domain>
+az account set --subscription <subscription-id>
+az account show --query "{subscription:id, tenant:tenantId, user:user.name}" -o table
+```
+
+The token cache lives in the container (`~/.azure/`) and is gone after a rebuild; then log in
+again. Never copy `~/.azure` from the host, and never create a client secret for Terraform: the
+GitHub workflows use OIDC (federated credential, see `infra/azure/README.md`).
 
 ## Git hooks
 
@@ -90,5 +107,5 @@ never overwrites the host's hook.
   `docker run -v "$PWD/...:/data"` mounts a host path that does not exist (`/workspaces/...`).
   To extract inside the container, run the extractor directly (`uv run python -m
   energy_lakehouse.extract_local --out data/landing`), or use a named volume and `docker cp`.
-- **Logins don't survive a rebuild** (Databricks and `gh`). This is intentional: nothing secret
+- **Logins don't survive a rebuild** (Databricks, `gh` and `az`). This is intentional: nothing secret
   is mounted from the host.

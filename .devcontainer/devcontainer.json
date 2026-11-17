@@ -16,6 +16,10 @@
     "ghcr.io/devcontainers/features/terraform:1": {
       "version": "1.16.6",
       "tflint": "0.64.0"
+    },
+    // Azure CLI for infra/azure (Lab 13): log in with `az login --use-device-code`.
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "version": "2.92.0"
     }
   },
   "remoteUser": "vscode",
