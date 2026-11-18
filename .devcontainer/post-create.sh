@@ -16,6 +16,10 @@ if ! git config --global --get-all safe.directory | grep -qxF "$PWD"; then
   git config --global --add safe.directory "$PWD"
 fi
 
+# Named volumes for CLI logins (devcontainer.json "mounts") are created root-owned; hand them
+# to vscode so `az login` / `databricks auth login` can write their caches and config.
+sudo chown -R "$(id -u):$(id -g)" /home/vscode/.azure /home/vscode/.databricks
+
 # No git hook install here: with a bind-mounted repo .git/hooks is shared with the host, and
 # installing would overwrite the host's hook with one that points at this container's Python.
 # Install it on the machine you commit from (see .devcontainer/README.md, "Git hooks").

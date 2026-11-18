@@ -6,12 +6,16 @@ and tflint). Checks:
   databricks_permissions; never the _workspace_users catalog grant;
 - no databricks_grant targets the consumer group energy-consumers: its USE SCHEMA and table
   grants come from apply_contracts (ADR 0010);
-- every databricks_schema / databricks_volume has `prevent_destroy = true`;
-- no secrets: no token/password/client_secret arguments, no OAuth secret resources, no `profile`
-  or hardcoded host in the provider block;
+- every databricks_schema / databricks_volume / identity / group membership has
+  `prevent_destroy = true`;
+- the Terraform SP sp-energy-terraform exists and is in the workspace admins group (read with a
+  data source, never managed); that is the only managed group membership (ADR 0011);
+- no secrets: no secret/token/password/access key arguments in any .tf/.hcl file, no OAuth secret
+  or secret-scope resources, no `profile` or hardcoded host in the provider block;
 - provider pinned to an exact version that matches .terraform.lock.hcl; Terraform and tflint
   versions equal in versions.tf, ci.yml and the dev container;
-- every managed resource has an import block; .gitignore keeps state and tfvars out of git;
+- every managed resource has an import block, except the ones Terraform created itself
+  (CREATED_BY_TERRAFORM); .gitignore keeps state and tfvars out of git;
 - the committed .claude/settings.json denies terraform apply/destroy/state/import to Claude Code
   (plan/apply stay with the user in the dev container), and .gitignore does not ignore it.
 """
@@ -27,7 +31,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TF_DIR = REPO_ROOT / "terraform"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 BLOCK_RE = re.compile(
-    r"^(resource|import|provider|terraform|locals|variable)\b([^{\n]*)\{", re.MULTILINE
+    r"^(resource|data|import|provider|terraform|locals|variable)\b([^{\n]*)\{", re.MULTILINE
+)
+# Any argument whose name says it holds a credential (client_secret, sas_token, access_key, ...).
+CREDENTIAL_ARG_RE = re.compile(
+    r"^\s*(\w*(?:secret|token|password|access_key|sas_)\w*)\s*=", re.MULTILINE | re.IGNORECASE
 )
 SECRET_ARG_RE = re.compile(
     r"^\s*(token|password|client_secret|azure_client_secret|google_credentials)\s*=",
@@ -44,12 +52,20 @@ DENIED_TERRAFORM = {
     "Bash(terraform state:*)",
     "Bash(terraform import:*)",
 }
+TERRAFORM_SP = "sp-energy-terraform"
+# Created by Terraform (ADR 0011), so they have no import block.
+CREATED_BY_TERRAFORM = {
+    "databricks_service_principal.terraform",
+    "databricks_group_member.terraform_admin",
+}
 FORBIDDEN_RESOURCES = {
     "databricks_grants",
     "databricks_permissions",
     "databricks_service_principal_secret",
     "databricks_token",
     "databricks_obo_token",
+    "databricks_secret",
+    "databricks_secret_scope",
 }
 
 
@@ -168,7 +184,16 @@ def test_consumers_group_is_not_granted_by_terraform():
         assert not hits, f"databricks_grant.{name} targets {CONSUMERS_GROUP} via {hits}"
 
 
-@pytest.mark.parametrize("resource_type", ["databricks_schema", "databricks_volume"])
+@pytest.mark.parametrize(
+    "resource_type",
+    [
+        "databricks_schema",
+        "databricks_volume",
+        "databricks_service_principal",
+        "databricks_group",
+        "databricks_group_member",
+    ],
+)
 def test_prevent_destroy(resource_type):
     found = [
         (labels, body)
@@ -180,10 +205,58 @@ def test_prevent_destroy(resource_type):
         assert re.search(r"prevent_destroy\s*=\s*true", body), f"{labels}: no prevent_destroy"
 
 
+def test_terraform_sp_exists():
+    (body,) = [
+        body
+        for kind, labels, body in all_blocks()
+        if kind == "resource" and labels == ["databricks_service_principal", "terraform"]
+    ]
+    assert re.search(rf'^\s*display_name\s*=\s*"{TERRAFORM_SP}"\s*$', body, re.MULTILINE), body
+
+
+def test_terraform_sp_is_the_only_admin_member():
+    tf_blocks = all_blocks()
+    (admins,) = [
+        body
+        for kind, labels, body in tf_blocks
+        if kind == "data" and labels == ["databricks_group", "admins"]
+    ]
+    assert re.search(r'^\s*display_name\s*=\s*"admins"\s*$', admins, re.MULTILINE), admins
+    managed_groups = [
+        body
+        for kind, labels, body in tf_blocks
+        if kind == "resource" and labels[0] == "databricks_group"
+    ]
+    assert not [b for b in managed_groups if '"admins"' in b], "admins is read, never managed"
+    members = {
+        labels[1]: body
+        for kind, labels, body in tf_blocks
+        if kind == "resource" and labels[0] == "databricks_group_member"
+    }
+    assert list(members) == ["terraform_admin"], "the only managed membership is the Terraform SP"
+    body = members["terraform_admin"]
+    assert re.search(r"^\s*group_id\s*=\s*data\.databricks_group\.admins\.id\s*$", body, re.M)
+    assert re.search(
+        r"^\s*member_id\s*=\s*databricks_service_principal\.terraform\.id\s*$", body, re.M
+    )
+
+
+def test_credential_arg_re():
+    for line in ("client_secret = x", "  sas_token = x", "access_key=x", "TOKEN = x"):
+        assert CREDENTIAL_ARG_RE.search(line), line
+    for line in ("display_name = x", "use_azuread_auth = true", "key = x", "workspace_access = x"):
+        assert not CREDENTIAL_ARG_RE.search(line), line
+
+
 def test_no_secrets_or_tokens():
     text = strip_comments(tf_text())
-    for path in [*TF_DIR.glob("*.tf"), *TF_DIR.glob("*.tfvars.example")]:
-        assert not SECRET_VALUE_RE.search(path.read_text("utf-8")), path.name
+    files = [*TF_DIR.glob("*.tf"), *TF_DIR.glob("*.hcl"), *TF_DIR.glob("*.tfvars.example")]
+    assert TF_DIR / "backend.azure.hcl" in files
+    for path in files:
+        raw = path.read_text("utf-8")
+        assert not SECRET_VALUE_RE.search(raw), path.name
+        hit = CREDENTIAL_ARG_RE.search(strip_comments(raw))
+        assert not hit, f"{path.name}: {hit.group(1)}"
     assert not SECRET_ARG_RE.search(text), SECRET_ARG_RE.search(text).group(0)
 
 
@@ -239,7 +312,10 @@ def test_every_resource_is_imported():
         if kind == "import"
         for m in re.findall(r"^\s*to\s*=\s*(\S+)", body, re.MULTILINE)
     }
-    assert resources == imported, f"missing imports: {sorted(resources - imported)}"
+    assert CREATED_BY_TERRAFORM <= resources, sorted(CREATED_BY_TERRAFORM - resources)
+    assert not CREATED_BY_TERRAFORM & imported, "created by Terraform, so no import block"
+    expected = resources - CREATED_BY_TERRAFORM
+    assert expected == imported, f"missing imports: {sorted(expected - imported)}"
 
 
 def test_gitignore_keeps_state_and_tfvars_out():
