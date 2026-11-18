@@ -45,7 +45,16 @@ FORBIDDEN_RESOURCES = {
     "azurerm_key_vault_certificate",
     "azurerm_storage_account_sas",
 }
-GITHUB_REPO = "tutul032/energy-lakehouse-de"
+GITHUB_DEFAULTS = {
+    "github_owner": "tutul032",
+    "github_owner_id": "32595971",
+    "github_repo": "energy-lakehouse-de",
+    "github_repo_id": "1421373042",
+}
+# GitHub's immutable OIDC subject format: repo:<owner>@<owner_id>/<repo>@<repo_id>:...
+GITHUB_SUBJECT_PREFIX = (
+    "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}"
+)
 
 
 def tf_files() -> list[Path]:
@@ -205,11 +214,13 @@ def test_github_federated_subjects():
     assert attr(fic, "audiences") == '["api://AzureADTokenExchange"]'
     subjects = set(re.findall(r'=\s*"(repo:[^"]+)"', locals_text()))
     assert subjects == {
-        "repo:${var.github_repository}:pull_request",
-        "repo:${var.github_repository}:ref:refs/heads/${var.github_branch}",
+        f"{GITHUB_SUBJECT_PREFIX}:pull_request",
+        f"{GITHUB_SUBJECT_PREFIX}:ref:refs/heads/${{var.github_branch}}",
     }
     variables = {labels[0]: body for kind, labels, body in all_blocks() if kind == "variable"}
-    assert attr(variables["github_repository"], "default") == f'"{GITHUB_REPO}"'
+    assert "github_repository" not in variables, "mutable owner/name subject is rejected"
+    for name, default in GITHUB_DEFAULTS.items():
+        assert attr(variables[name], "default") == f'"{default}"'
     assert attr(variables["github_branch"], "default") == '"master"'
     app = resource("azuread_application")
     assert attr(app, "display_name") == '"gh-energy-lakehouse"'

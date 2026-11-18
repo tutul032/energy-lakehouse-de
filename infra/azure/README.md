@@ -9,7 +9,7 @@ root needs, and nothing else:
 | Storage account | `stenergytf<8 hex>` | Terraform state for later roots. Standard_LRS, StorageV2, TLS 1.2, HTTPS only, no public blob access, **shared keys off** (Entra ID only), blob versioning + 7-day soft delete |
 | Blob container | `tfstate` | private |
 | Key Vault | `kv-energy-<8 hex>` | RBAC authorization, soft delete 7 days, purge protection **off** (easy teardown). Terraform never writes secrets |
-| Entra app + service principal | `gh-energy-lakehouse` | No client secret. Federated credentials for GitHub OIDC: `repo:tutul032/energy-lakehouse-de:pull_request` and `…:ref:refs/heads/master` |
+| Entra app + service principal | `gh-energy-lakehouse` | No client secret. Federated credentials for GitHub OIDC: `repo:tutul032@32595971/energy-lakehouse-de@1421373042:pull_request` and `…:ref:refs/heads/master` |
 | Role assignments | | SP: *Storage Blob Data Contributor* on the `tfstate` container, *Key Vault Secrets User* on the vault. You (the operator): *Storage Blob Data Contributor* on the container, *Key Vault Secrets Officer* on the vault |
 | Budget | `budget-energy-lakehouse-monthly` | Subscription, 10 USD/month, e-mail at 50 / 80 / 100 % (actual cost). Alerts only, it never stops spending |
 
@@ -105,8 +105,14 @@ Set repository **variables** (not secrets; none of these values is a secret):
 `AZURE_SUBSCRIPTION_ID` = `subscription_id`. A workflow then needs `permissions: id-token: write`
 and `azure/login` with these three inputs (no `creds`, no client secret).
 
-Subjects that are trusted: pull requests (`repo:tutul032/energy-lakehouse-de:pull_request`) and
-pushes to master (`…:ref:refs/heads/master`). A job with `environment:` sends the subject
+Subjects that are trusted: pull requests
+(`repo:tutul032@32595971/energy-lakehouse-de@1421373042:pull_request`) and pushes to master
+(`…:ref:refs/heads/master`). Why the numeric IDs: GitHub presents OIDC subjects in its immutable
+format `repo:<owner>@<owner_id>/<repo>@<repo_id>:…`, so an owner or repository that is renamed,
+or deleted and re-created under the same name, cannot inherit the trust. A credential with the
+old `repo:<owner>/<repo>:…` subject is rejected with `AADSTS700213`. The four parts are variables
+(`github_owner`, `github_owner_id`, `github_repo`, `github_repo_id`); look up the IDs with
+`gh api repos/<owner>/<repo> --jq '.owner.id, .id'`. A job with `environment:` sends the subject
 `repo:…:environment:<name>` instead. That subject needs its own federated credential (add it to
 `local.github_subjects` in `identity.tf`).
 
