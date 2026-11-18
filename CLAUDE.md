@@ -23,9 +23,11 @@ Dockerfile                  # extractor image (multi-stage: uv builds wheel; pyt
   Dockerfile                #   FROM python base image (major tag), removes the broken Yarn apt source
   post-create.sh            #   pinned uv (pipx), uv sync --locked, safe.directory (no hook install)
   features/databricks-cli/  #   local feature: official setup-cli install script at a pinned version
-terraform/                  # UC platform (ADR 0010): schemas, landing volume, SPs, group, grants
+terraform/                  # UC platform (ADR 0010, 0011): schemas, landing volume, SPs, group, grants
   versions.tf               #   Terraform ~> 1.16.6, databricks provider 1.139.1 (+ .terraform.lock.hcl)
   providers.tf              #   host = var.databricks_host; auth from the environment only
+  backend.tf                #   backend "azurerm" {} (partial config, ADR 0011)
+  backend.azure.hcl         #   RG / storage account / container / key, use_azuread_auth (no secrets)
   variables.tf, schemas.tf, volumes.tf, identities.tf, grants.tf
   imports.tf                #   import blocks for the existing objects (zero-diff adoption)
   terraform.tfvars.example  #   copy to terraform.tfvars (gitignored)
@@ -97,11 +99,17 @@ docs/data-products/         # generated data product pages (one per contract; do
                                      #   -> deploy (env production approval) -> promote-image (:prod)
 .github/workflows/daily-refresh.yml  # 05:17 UTC: docker run energy-extractor:prod, sync_landing.sh
                                      #   (SKIP_EXTRACT=1), then jobs run-now prod daily_refresh_job
+.github/workflows/terraform-plan.yml # PR (terraform/**, infra/azure/**) + Mon 05:41 UTC + dispatch:
+                                     #   OIDC az login, Key Vault creds, init azurerm, plan only
+                                     #   (-lock=false -detailed-exitcode); exit 2 = drift off-PR
+tests/test_terraform_plan_workflow.py # plan only, OIDC vars, no secrets., KV-only creds, pinned
+                                     #   actions, only workflow with id-token: write
 tests/test_workflows.py              # deploy-prod job order/permissions, daily-refresh image + no secrets,
                                      #   pinned actions (no @main/@master, no checkout/upload-artifact
                                      #   @v4), runs-on ubuntu-24.04 (never ubuntu-latest)
 tests/test_terraform.py              # singular grants only, prevent_destroy, no secrets, pinned +
                                      #   locked provider, versions = CI = dev container, all imported
+                                     #   (except Terraform-created), terraform SP in admins
 tests/test_azure_infra.py            # infra/azure: pinned + locked providers, no backend, no secrets,
                                      #   RG tags, private state storage, KV RBAC, OIDC subjects, az feature
 ```
@@ -447,15 +455,33 @@ builds its own tables in its own schema.
   free` (callback port 8020 forwarded) and `gh auth login`. When bumping a version, keep these
   equalities (`tests/test_devcontainer.py`). Inside: `docker run` without `-it` loses output
   (socat proxy), `-v` paths are host paths.
-- **Terraform (`terraform/`, ADR 0010):** platform only: schemas, the landing volume, the two
-  SPs and `energy-consumers` (entitlements, no membership), and their catalog/schema/volume
+- **Terraform (`terraform/`, ADR 0010):** platform only: schemas, the landing volume, the three
+  SPs (refresh, CI/CD, Terraform) and `energy-consumers` (entitlements, no membership), and their catalog/schema/volume
   grants. Only `databricks_grant` (singular, one principal), never `databricks_grants` or
   `databricks_permissions`; never the `_workspace_users` catalog grant, consumer-group
   `USE SCHEMA` or table grants (`apply_contracts`), or bundle resources. `prevent_destroy` on
   schemas, the volume and identities; no OAuth secrets/tokens; provider auth from the environment
-  (`DATABRICKS_CONFIG_PROFILE=free`), host from `var.databricks_host`. Local state (gitignored).
-  The existing objects are adopted with `import` blocks; the plan must stay zero-diff unless a
-  PR changes the platform on purpose. Terraform/tflint versions are equal in `versions.tf`,
+  (`DATABRICKS_CONFIG_PROFILE=free`), host from `var.databricks_host`. The existing objects are
+  adopted with `import` blocks; the plan must stay zero-diff unless a PR changes the platform on
+  purpose.
+  - **Remote state (ADR 0011):** `azurerm` backend, partial config: `backend.tf` =
+    `backend "azurerm" {}`, `backend.azure.hcl` = `rg-energy-platform` / `stenergytf0cd70240` /
+    `tfstate` / `energy-lakehouse/databricks.tfstate`, `use_azuread_auth = true` (Entra ID only,
+    shared keys off, blob-lease locking). Locally `az login` + `terraform init
+    -backend-config=backend.azure.hcl`. Never commit state or put keys/SAS in the backend config.
+  - **Terraform SP `sp-energy-terraform`** (`databricks_service_principal.terraform`): created by
+    Terraform (no import block, listed in `CREATED_BY_TERRAFORM` in `tests/test_terraform.py`),
+    workspace admin via `databricks_group_member.terraform_admin` (`data "databricks_group"
+    "admins"`, never managed); the only managed group membership. Its OAuth secret is created by
+    hand and stored only in Key Vault `kv-energy-0cd70240` (`databricks-terraform-client-id`,
+    `databricks-terraform-client-secret`); never in Terraform, state or GitHub secrets.
+  - **`.github/workflows/terraform-plan.yml`:** plan only (never apply/import/state). Triggers:
+    PRs on `terraform/**` / `infra/azure/**`, Mondays 05:41 UTC, `workflow_dispatch` (master).
+    Permissions `contents: read`, `id-token: write` (the only workflow with it). `azure/login`
+    via OIDC with repo variables `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`
+    (also `ARM_*` for the backend); Databricks creds read from Key Vault, masked, only in the plan
+    step; no `secrets.`. `plan -input=false -lock=false -detailed-exitcode`: exit 2 passes on PRs,
+    fails as drift on schedule/dispatch (runbook "Terraform drift alert"). Terraform/tflint versions are equal in `versions.tf`,
   ci.yml job `terraform` (fmt, `init -backend=false`, validate, tflint; no credentials, never
   plan/apply) and the dev container feature (`tests/test_terraform.py`). Plan/apply only in the
   dev container, by the user; never run `terraform apply` on the user's behalf.

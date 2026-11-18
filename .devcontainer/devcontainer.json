@@ -23,10 +23,29 @@
     }
   },
   "remoteUser": "vscode",
+  // CLI logins made inside the container survive a rebuild: named Docker volumes (never bind
+  // mounts of host credential folders). post-create.sh chowns them to vscode.
+  "mounts": [
+    {
+      "source": "energy-lakehouse-de-azure",
+      "target": "/home/vscode/.azure",
+      "type": "volume"
+    },
+    {
+      "source": "energy-lakehouse-de-databricks",
+      "target": "/home/vscode/.databricks",
+      "type": "volume"
+    }
+  ],
   // The Linux venv lives outside the bind-mounted workspace, so it never clobbers a host .venv.
+  // The Databricks config file lives in the persisted ~/.databricks volume. Host and profile
+  // are not secrets (host = databricks.yml workspace.host).
   "containerEnv": {
     "UV_PROJECT_ENVIRONMENT": "/home/vscode/.venvs/energy-lakehouse-de",
-    "UV_LINK_MODE": "copy"
+    "UV_LINK_MODE": "copy",
+    "DATABRICKS_CONFIG_FILE": "/home/vscode/.databricks/databrickscfg",
+    "DATABRICKS_CONFIG_PROFILE": "free",
+    "TF_VAR_databricks_host": "https://dbc-405898bc-c90e.cloud.databricks.com"
   },
   "remoteEnv": {
     "PATH": "/home/vscode/.venvs/energy-lakehouse-de/bin:${containerEnv:PATH}"

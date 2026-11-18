@@ -10,8 +10,11 @@ inside. Checks:
   matches the CLI version CI installs (databricks/setup-cli@vX.Y.Z) when CI pins one;
 - postCreateCommand installs a pinned uv (same as the extractor Dockerfile), then `uv sync`, and
   never installs git hooks (they would overwrite the host's hook in a shared .git/hooks);
-- remoteUser is set and not root; no mounts of credential files; no env/option names or values
-  that look like tokens/secrets.
+- remoteUser is set and not root; no env/option names or values that look like tokens/secrets;
+- CLI logins persist only in named Docker volumes at ~/.azure and ~/.databricks (every mount is
+  type=volume with a plain volume name, never a bind mount of a host credential folder), the
+  Databricks config file lives in that volume, post-create.sh chowns the volumes to vscode, and
+  containerEnv sets the non-secret DATABRICKS_CONFIG_PROFILE / TF_VAR_databricks_host.
 """
 
 import json
@@ -34,6 +37,8 @@ IMAGE_RE = re.compile(
 )
 SECRET_RE = re.compile(r"TOKEN|SECRET|PASSWORD|CLIENT_ID|API_KEY", re.IGNORECASE)
 CREDENTIAL_PATHS = (".databrickscfg", ".databricks", ".ssh", ".git-credentials", ".config/gh")
+VOLUME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+LOGIN_VOLUME_TARGETS = {"/home/vscode/.azure", "/home/vscode/.databricks"}
 REQUIRED_EXTENSIONS = {
     "ms-python.python",
     "charliermarsh.ruff",
@@ -213,17 +218,62 @@ def test_remote_user_not_root(config):
     assert config.get("containerUser") in {None, user}
 
 
-def test_no_secret_env_or_mounts(config):
+def is_named_volume(mount) -> bool:
+    """True for an object mount of type volume whose source is a plain volume name (no path)."""
+    return (
+        isinstance(mount, dict)
+        and mount.get("type") == "volume"
+        and bool(VOLUME_NAME_RE.match(str(mount.get("source", ""))))
+    )
+
+
+@pytest.mark.parametrize(
+    ("mount", "ok"),
+    [
+        ({"source": "x-azure", "target": "/home/vscode/.azure", "type": "volume"}, True),
+        ({"source": "/c/Users/me/.azure", "target": "/home/vscode/.azure", "type": "bind"}, False),
+        ({"source": "${localEnv:HOME}/.azure", "target": "/x", "type": "volume"}, False),
+        ("source=x,target=/home/vscode/.azure,type=volume", False),
+    ],
+)
+def test_is_named_volume(mount, ok):
+    assert is_named_volume(mount) is ok
+
+
+def test_no_secret_env(config):
     problems = [
         f"{path}: {text}"
         for path, text in walk_strings(config)
         if SECRET_RE.search(text) and "/customizations/" not in path
     ]
-    for mount in config.get("mounts") or []:
-        source = mount if isinstance(mount, str) else json.dumps(mount)
-        if any(p in source for p in CREDENTIAL_PATHS):
-            problems.append(f"mount of credentials: {source}")
     assert not problems, "\n".join(problems)
+
+
+def test_mounts_are_named_volumes_never_host_credentials(config):
+    mounts = config.get("mounts") or []
+    problems = [f"not a named volume: {m}" for m in mounts if not is_named_volume(m)]
+    for mount in mounts:
+        source = mount if isinstance(mount, str) else str(mount.get("source", ""))
+        if any(p in source for p in (*CREDENTIAL_PATHS, ".azure")):
+            problems.append(f"mount of host credentials: {source}")
+    assert not problems, "\n".join(problems)
+    assert {m["target"] for m in mounts} == LOGIN_VOLUME_TARGETS
+    sources = [m["source"] for m in mounts]
+    assert len(set(sources)) == len(sources), "login volumes must be distinct"
+
+
+def test_login_env_and_volume_ownership(config):
+    env = config["containerEnv"]
+    assert env["DATABRICKS_CONFIG_FILE"].startswith("/home/vscode/.databricks/")
+    assert env["DATABRICKS_CONFIG_PROFILE"] == "free"
+    bundle = yaml.safe_load((REPO_ROOT / "databricks.yml").read_text(encoding="utf-8"))
+    assert env["TF_VAR_databricks_host"].rstrip("/") == bundle["workspace"]["host"].rstrip("/")
+    script = POST_CREATE.read_text(encoding="utf-8")
+    commands = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
+    chown = [line for line in commands if "chown" in line]
+    assert chown, "post-create.sh does not chown the login volumes"
+    for target in sorted(LOGIN_VOLUME_TARGETS):
+        assert any(target in line for line in chown), f"{target} not chowned"
 
 
 def test_required_extensions(config):

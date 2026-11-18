@@ -5,7 +5,10 @@ alert_email     = "you@example.com"
 
 # Defaults, override only if needed:
 # location          = "swedencentral"
-# github_repository = "tutul032/energy-lakehouse-de"
+# github_owner      = "tutul032"
+# github_owner_id   = "32595971"
+# github_repo       = "energy-lakehouse-de"
+# github_repo_id    = "1421373042"
 # github_branch     = "master"
 # budget_amount     = 10
 # budget_start_date = "2026-11-01T00:00:00Z"

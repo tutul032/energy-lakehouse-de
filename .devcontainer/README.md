@@ -16,7 +16,9 @@ the same container and runs the tests in it (`ci.yml`, job `devcontainer`).
 After the container is created, `post-create.sh` runs `uv sync --locked` (venv in
 `/home/vscode/.venvs/energy-lakehouse-de`, outside the workspace). It does not install git hooks
 (see [Git hooks](#git-hooks)).
-You work as the non-root user `vscode`. No credentials are copied or mounted into the container.
+You work as the non-root user `vscode`. No host credentials are copied or mounted into the
+container; logins made inside it persist in named Docker volumes (see
+[Persisted logins](#persisted-logins)).
 
 ## Open it
 
@@ -45,9 +47,15 @@ databricks current-user me -p free
 ```
 
 The CLI prints a URL and waits on `localhost:8020`. VS Code forwards that port (see
-`forwardPorts`), so the browser on the host completes the login. The token cache lives in the
-container (`~/.databricks/`) and is gone after a rebuild; then log in again. All repo commands
-work unchanged with `-p free`, for example `databricks bundle validate -t dev -p free`.
+`forwardPorts`), so the browser on the host completes the login. The token cache
+(`~/.databricks/`) and the config file (`DATABRICKS_CONFIG_FILE` =
+`~/.databricks/databrickscfg`, instead of `~/.databrickscfg`) live in the named volume
+`energy-lakehouse-de-databricks`, so the login survives a rebuild.
+
+`containerEnv` sets `DATABRICKS_CONFIG_PROFILE=free` (CLI and Terraform provider default to the
+`free` profile) and `TF_VAR_databricks_host` (the workspace host for `terraform/`; not a
+secret). All repo commands work unchanged with `-p free`, for example
+`databricks bundle validate -t dev -p free`.
 
 ## Log in to GitHub
 
@@ -71,9 +79,26 @@ az account set --subscription <subscription-id>
 az account show --query "{subscription:id, tenant:tenantId, user:user.name}" -o table
 ```
 
-The token cache lives in the container (`~/.azure/`) and is gone after a rebuild; then log in
-again. Never copy `~/.azure` from the host, and never create a client secret for Terraform: the
+The token cache (`~/.azure/`) lives in the named volume `energy-lakehouse-de-azure`, so the
+login survives a rebuild. Never copy `~/.azure` from the host, and never create a client secret for Terraform: the
 GitHub workflows use OIDC (federated credential, see `infra/azure/README.md`).
+
+## Persisted logins
+
+`devcontainer.json` mounts two named Docker volumes (never bind mounts of host folders):
+
+| Volume | Mounted at | Holds |
+|---|---|---|
+| `energy-lakehouse-de-azure` | `/home/vscode/.azure` | `az login` token cache |
+| `energy-lakehouse-de-databricks` | `/home/vscode/.databricks` | Databricks OAuth token cache, `databrickscfg` |
+
+Docker creates them owned by root, so `post-create.sh` chowns them to `vscode`. They outlive
+**Rebuild Container**; the `gh` login does not (it lives in `~/.config/gh`). To log out for good,
+remove them on the host while the container is stopped:
+
+```bash
+docker volume rm energy-lakehouse-de-azure energy-lakehouse-de-databricks
+```
 
 ## Git hooks
 
@@ -107,5 +132,5 @@ never overwrites the host's hook.
   `docker run -v "$PWD/...:/data"` mounts a host path that does not exist (`/workspaces/...`).
   To extract inside the container, run the extractor directly (`uv run python -m
   energy_lakehouse.extract_local --out data/landing`), or use a named volume and `docker cp`.
-- **Logins don't survive a rebuild** (Databricks, `gh` and `az`). This is intentional: nothing secret
-  is mounted from the host.
+- **`gh` login doesn't survive a rebuild.** Databricks and `az` logins persist in named volumes
+  (see [Persisted logins](#persisted-logins)); nothing secret is mounted from the host.

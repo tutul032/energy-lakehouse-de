@@ -1,0 +1,133 @@
+name: terraform-plan
+
+# Plan terraform/ against the real workspace and the remote state (ADR 0011). Never applies.
+# - pull_request: show the plan in the job summary; changes (exit 2) are expected and pass.
+# - schedule / workflow_dispatch: any change (exit 2) is DRIFT and fails the job, so GitHub
+#   e-mails the alert. How to read it: docs/runbook.md "Terraform drift alert".
+# Azure: GitHub OIDC (no client secret); the Databricks credentials of sp-energy-terraform come
+# only from Key Vault, are masked, and reach only the plan step.
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "infra/azure/**"
+      - ".github/workflows/terraform-plan.yml"
+  schedule:
+    - cron: "41 5 * * 1" # Mondays 05:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      TERRAFORM_VERSION: 1.16.6
+      KEY_VAULT: kv-energy-0cd70240
+      # azurerm backend: Entra ID via GitHub OIDC (identifiers only, repository variables).
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          # The SP has data-plane roles only (state container, vault), no subscription role.
+          allow-no-subscriptions: true
+
+      - name: Read Databricks credentials from Key Vault
+        id: kv
+        run: |
+          set -euo pipefail
+          for name in client-id client-secret; do
+            value="$(az keyvault secret show --vault-name "${KEY_VAULT}" \
+              --name "databricks-terraform-${name}" --query value -o tsv)"
+            [[ -n "${value}" ]] || { echo "::error::Key Vault secret databricks-terraform-${name} is empty"; exit 1; }
+            echo "::add-mask::${value}"
+            echo "${name//-/_}=${value}" >> "${GITHUB_OUTPUT}"
+          done
+
+      - name: Workspace host from databricks.yml
+        run: |
+          set -euo pipefail
+          host="$(yq -r '.workspace.host' ../databricks.yml)"
+          [[ "${host}" == https://* ]] || { echo "::error::no workspace.host in databricks.yml"; exit 1; }
+          echo "TF_VAR_databricks_host=${host}" >> "${GITHUB_ENV}"
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init (azurerm backend)
+        run: terraform init -input=false -lockfile=readonly -backend-config=backend.azure.hcl
+
+      - name: terraform plan
+        env:
+          DATABRICKS_AUTH_TYPE: oauth-m2m
+          DATABRICKS_CLIENT_ID: ${{ steps.kv.outputs.client_id }}
+          DATABRICKS_CLIENT_SECRET: ${{ steps.kv.outputs.client_secret }}
+        run: |
+          set +e
+          plan_file="${RUNNER_TEMP}/plan.txt"
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color > "${plan_file}" 2>&1
+          code=$?
+          set -e
+          cat "${plan_file}"
+          summary="$(grep -E '^(Plan: |No changes\.|Changes to Outputs:|Error: )' "${plan_file}" || true)"
+          {
+            echo "## Terraform plan (\`terraform/\`)"
+            echo
+            echo "Event \`${GITHUB_EVENT_NAME}\`, exit code \`${code}\` (0 = no changes, 2 = changes, other = error)."
+            echo
+            echo '```'
+            echo "${summary:-no summary line, see the full plan}"
+            echo '```'
+            echo
+            echo '<details><summary>Full plan</summary>'
+            echo
+            echo '```'
+            cat "${plan_file}"
+            echo '```'
+            echo '</details>'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          case "${code}" in
+            0)
+              echo "::notice title=Terraform plan::No changes: terraform/ matches the workspace."
+              ;;
+            2)
+              if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+                echo "::notice title=Terraform plan::Changes planned. Review them in the job summary; apply locally after merge (docs/runbook.md)."
+              else
+                echo "::error title=Terraform DRIFT::The workspace differs from terraform/ on master. Someone changed the platform outside Terraform, or a merged change was not applied. See docs/runbook.md 'Terraform drift alert'."
+                {
+                  echo
+                  echo "### DRIFT"
+                  echo "The plan of master is not empty. Follow docs/runbook.md, \"Terraform drift alert\"."
+                } >> "${GITHUB_STEP_SUMMARY}"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error title=Terraform plan failed::terraform plan exited with ${code}; see the log above."
+              exit "${code}"
+              ;;
+          esac

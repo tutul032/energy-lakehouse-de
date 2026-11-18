@@ -11,6 +11,8 @@ Operational fixes for energy-lakehouse-de. Commands are PowerShell-compatible.
 - [Run the extractor in Docker](#run-the-extractor-in-docker)
 - [Extractor image in prod](#extractor-image-in-prod)
 - [Change platform grants](#change-platform-grants)
+- [Terraform state and drift](#terraform-state-and-drift)
+- [Terraform drift alert](#terraform-drift-alert)
 
 ## Daily refresh failed
 
@@ -117,7 +119,11 @@ OAuth secrets of service principals expire. Keep this table current (dates in UT
 | `DATABRICKS_CLIENT_SECRET` | refresh SP (`refresh_sp_app_id`) | `daily-refresh.yml` | 2026-10-19 | 2028-10-17 | **2028-10-03** (expiry − 14 days) |
 | `DATABRICKS_CICD_CLIENT_SECRET` | CI/CD SP (`cicd_sp_app_id`) | `ci.yml`, `deploy-staging.yml`, `deploy-prod.yml` | 2026-10-30 | 2027-10-30 | **2027-10-16** (expiry − 14 days) |
 
-`DATABRICKS_HOST` and the `*_CLIENT_ID` secrets do not expire.
+| Key Vault `databricks-terraform-client-secret` | Terraform SP (`sp-energy-terraform`) | `terraform-plan.yml` | _set at creation_ | _set at creation_ | expiry − 14 days |
+
+`DATABRICKS_HOST` and the `*_CLIENT_ID` secrets do not expire. The Terraform SP's secret is not a
+GitHub secret: it lives only in Key Vault `kv-energy-0cd70240` (ADR 0011), see
+[Terraform SP secret (Key Vault)](#terraform-sp-secret-key-vault) below.
 
 Rotation (workspace admin; one secret at a time):
 
@@ -143,6 +149,38 @@ databricks service-principal-secrets-proxy delete <sp-id> <old-secret-id> -p fre
 
 Update the table (created, expiry, rotate-by) in the same PR as any related change, or in a
 separate docs PR.
+
+### Terraform SP secret (Key Vault)
+
+In the dev container (`az login --use-device-code`, Databricks profile `free`; you need *Key
+Vault Secrets Officer* on the vault, granted by `infra/azure`). The secret value is captured in a
+shell variable and handed to `az` through a file descriptor: it is never printed and never on a
+command line.
+
+```bash
+# 1. Workspace ID of the SP and its current secrets (note the old secret's id)
+sp_id="$(databricks service-principals list -p free -o json \
+  | jq -r '.[] | select(.displayName == "sp-energy-terraform") | .id')"
+databricks service-principal-secrets-proxy list "${sp_id}" -p free
+
+# 2. New secret (365 days) straight into Key Vault; --output none: az would print the value
+secret="$(databricks service-principal-secrets-proxy create "${sp_id}" --lifetime 31536000s \
+  -p free -o json | jq -r .secret)"
+az keyvault secret set --vault-name kv-energy-0cd70240 --name databricks-terraform-client-secret \
+  --file <(printf '%s' "${secret}") --output none
+unset secret
+
+# 3. Verify: the plan must log in and report no changes
+gh workflow run terraform-plan.yml --ref master
+gh run watch "$(gh run list --workflow terraform-plan.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+
+# 4. Delete the old Databricks secret once the run is green
+databricks service-principal-secrets-proxy delete "${sp_id}" <old-secret-id> -p free
+```
+
+The client ID (`databricks-terraform-client-id`) does not change on rotation. Key Vault keeps the
+previous version of the secret (versioning, soft delete); it stops working as soon as step 4
+deletes it in Databricks.
 
 ## Dashboard modified remotely
 
@@ -344,3 +382,83 @@ pipeline and dashboard permissions come from the bundle.
 
 If a grant was changed by hand anyway, `terraform plan` shows it: revert it with an apply, or, if
 it is wanted, add it to `terraform/` through the steps above.
+
+## Terraform state and drift
+
+**Where the state lives** (ADR 0011): Azure blob
+`stenergytf0cd70240/tfstate/energy-lakehouse/databricks.tfstate` (resource group
+`rg-energy-platform`), configured by `terraform/backend.tf` (`backend "azurerm" {}`) plus
+`terraform/backend.azure.hcl` (identifiers only). Auth is Entra ID only (`use_azuread_auth`;
+shared keys are disabled on the account): locally your `az login`, in `terraform-plan.yml` GitHub
+OIDC. Blob versioning and 7-day soft delete keep older state versions. There is no local
+`terraform.tfstate` any more; never copy the state into the repo or a gist (it lists every
+identity and grant).
+
+Working locally (dev container):
+
+```bash
+az login --use-device-code
+cd terraform
+terraform init -backend-config=backend.azure.hcl
+DATABRICKS_CONFIG_PROFILE=free terraform plan
+```
+
+**Locking:** the azurerm backend takes a blob lease on the state blob for every local `plan` /
+`apply`, so two applies cannot overlap. `terraform-plan.yml` plans with `-lock=false` (a plan
+never writes state, and it must never block a local apply). If a crashed local run left a lease
+(`Error acquiring the state lock`, with a lock ID) and nobody else is running Terraform, release
+it: `terraform force-unlock <lock-id>`.
+
+**How the migration was done** (2026-11-18, dev container, once):
+
+1. `terraform plan` on the local state: no changes (the starting point must be clean).
+2. Copied `terraform.tfstate` to `terraform.tfstate.pre-migration-backup` (gitignored).
+3. Added `backend.tf` / `backend.azure.hcl`, then `az login` and
+   `terraform init -backend-config=backend.azure.hcl -migrate-state`, answered `yes` to copy the
+   existing state to the new backend. Terraform uploaded it and emptied the local
+   `terraform.tfstate` (keeping `terraform.tfstate.backup`).
+4. `DATABRICKS_CONFIG_PROFILE=free terraform plan`: no changes, now read from the blob. The blob
+   is visible in the portal under `stenergytf0cd70240` → `tfstate` → `energy-lakehouse/`.
+5. Delete the local `terraform.tfstate*` files after the first green scheduled plan; until then
+   they are the fallback.
+
+**Back to local state** (Azure exit, see `infra/azure/README.md`; before the subscription is
+deleted): delete `terraform/backend.tf`, run `terraform init -migrate-state` and answer `yes`
+(state copied to a local `terraform.tfstate`), `terraform plan` must show no changes, then disable
+the schedule of `terraform-plan.yml`.
+
+## Terraform drift alert
+
+`terraform-plan.yml` plans `master` every Monday at 05:41 UTC (and on `workflow_dispatch`). A
+non-empty plan there is **drift**: the job fails with the annotation `Terraform DRIFT`, and GitHub
+e-mails you. Pull-request plans with changes do not fail; they are the review.
+
+1. **Open the run** (link in the e-mail, or `gh run list --workflow terraform-plan.yml`). The job
+   summary has the `Plan:` line and the full plan in a collapsed block.
+2. **Read the plan**, resource by resource:
+
+   | Plan shows | Usual cause |
+   |---|---|
+   | `+ create` `databricks_grant.*` | A grant was revoked by hand (UI, SQL `REVOKE`). |
+   | `~ update in-place` `databricks_grant.*` (`privileges`) | Privileges added or removed by hand on that securable for that principal. |
+   | `~ update in-place` on a schema, volume, SP or group | Comment, owner or entitlement changed in the UI. |
+   | `+ create` on a schema, volume or identity | The object was deleted in the workspace (serious: data or access lost). |
+   | `- destroy` / `-/+ replace` | A merged PR changed `terraform/` but was never applied (check `git log -- terraform/`). With `prevent_destroy` this is an error instead (see below). |
+
+3. **Decide:**
+   - Change merged but not applied → apply it (dev container): `terraform plan -out=change.tfplan`,
+     check it matches the PR, `terraform apply change.tfplan`.
+   - Hand change that is unwanted → revert it with the same plan/apply (Terraform restores the
+     code's state).
+   - Hand change that is wanted → make it a PR to `terraform/` ([Change platform grants](#change-platform-grants));
+     the PR plan must then show no changes.
+4. **Confirm:** `gh workflow run terraform-plan.yml --ref master`; it must end with
+   `No changes`.
+
+The job fails with a different annotation (`Terraform plan failed`, exit code 1) when the plan
+cannot run at all: `azure/login` errors (repository variables `AZURE_*` wrong, or federated
+credential missing), `Key Vault secret ... is empty` / `403` (vault role), Databricks `401` /
+`invalid_client` (Terraform SP secret expired or deleted: rotate it,
+[Terraform SP secret (Key Vault)](#terraform-sp-secret-key-vault)), `403` on the state blob
+(container role), or `Instance cannot be destroyed` (a change would destroy a `prevent_destroy`
+object: fix the code, never remove the guard to get a green run).

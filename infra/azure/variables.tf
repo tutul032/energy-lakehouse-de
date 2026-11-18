@@ -29,10 +29,28 @@ variable "alert_email" {
   }
 }
 
-variable "github_repository" {
-  description = "GitHub repository (owner/name) whose workflows may log in via OIDC."
+variable "github_owner" {
+  description = "GitHub owner (user or org) whose repository may log in via OIDC."
   type        = string
-  default     = "tutul032/energy-lakehouse-de"
+  default     = "tutul032"
+}
+
+variable "github_owner_id" {
+  description = "Immutable numeric ID of the GitHub owner (part of the OIDC subject)."
+  type        = string
+  default     = "32595971"
+}
+
+variable "github_repo" {
+  description = "GitHub repository name whose workflows may log in via OIDC."
+  type        = string
+  default     = "energy-lakehouse-de"
+}
+
+variable "github_repo_id" {
+  description = "Immutable numeric ID of the GitHub repository (part of the OIDC subject)."
+  type        = string
+  default     = "1421373042"
 }
 
 variable "github_branch" {

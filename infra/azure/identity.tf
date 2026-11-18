@@ -1,8 +1,10 @@
 # GitHub Actions -> Azure via OIDC (workload identity federation): no client secret exists.
+# GitHub sends the immutable subject format repo:<owner>@<owner_id>/<repo>@<repo_id>:...
+# (AADSTS700213 if the credential still uses repo:<owner>/<repo>:...).
 locals {
   github_subjects = {
-    pull-request  = "repo:${var.github_repository}:pull_request"
-    branch-master = "repo:${var.github_repository}:ref:refs/heads/${var.github_branch}"
+    pull-request  = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}:pull_request"
+    branch-master = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}:ref:refs/heads/${var.github_branch}"
   }
 }
 
