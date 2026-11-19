@@ -23,6 +23,7 @@ For the big picture (architectures, glossary, lab lifecycle, prompting Claude Co
 | 10 | Wheel packaging, cleanup, portfolio documentation | [lab10-docs-packaging-cleanup.md](lab10-docs-packaging-cleanup.md) | [`lab10-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab10-complete) |
 | 11 | Docker: extractor image, GHCR, exact-digest promotion, dev container | [lab11-docker.md](lab11-docker.md) | [`lab11-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab11-complete) |
 | 12 | Terraform: adopt the Unity Catalog setup (imports, zero diff, drift test), first reviewed change | [lab12-terraform.md](lab12-terraform.md) | [`lab12-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab12-complete) |
+| 13 | Azure foundation: remote Terraform state, GitHub OIDC, Key Vault, plan on PRs, weekly drift alarm | [lab13-azure-foundation.md](lab13-azure-foundation.md) | [`lab13-complete`](https://github.com/tutul032/energy-lakehouse-de/tree/lab13-complete) |
 
 Short early notes (superseded by Lab 0): [lab0-setup.md](lab0-setup.md), [lab1-hello-job.md](lab1-hello-job.md).
 
