@@ -5,6 +5,7 @@ Operational fixes for energy-lakehouse-de. Commands are PowerShell-compatible.
 - [Daily refresh failed](#daily-refresh-failed)
 - [Rerun prod safely](#rerun-prod-safely)
 - [DST change days](#dst-change-days)
+- [Known source gap (data-quality waiver)](#known-source-gap-data-quality-waiver)
 - [Secret rotation](#secret-rotation)
 - [Dashboard modified remotely](#dashboard-modified-remotely)
 - [Release checklist](#release-checklist)
@@ -47,7 +48,7 @@ databricks jobs get-run-output <task-run-id> -p free    # error message and trac
 | `apply_contracts` | A consumer group in a contract (e.g. `energy-consumers`) does not exist, so `GRANT` fails. | Create the group in the workspace, or remove it from the contract (PATCH bump). |
 | `verify_contracts` | Schema drift, a quality rule above its allowed violation %, or freshness SLA missed. The task lists every failure. | Schema: fix the pipeline or the contract (ADR 0005). Freshness: same as `quality_checks`. |
 | `score_forecast` | Fewer than 23 forecast rows for a target with a champion (e.g. no weather forecast for D+1). Targets without a champion are skipped with a warning, not failed. | Check `gold_weather_forecast_hourly` for D+1 and the weather upload. |
-| `detect_anomalies` | A **critical** finding (completeness of `total_load` / `day_ahead_price`, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. |
+| `detect_anomalies` | A **critical** finding (completeness of `total_load` / `day_ahead_price`, physics rule, forecast MAPE drift) or an empty input window. Tables are written before it raises. | Read the listed critical rows (dashboard page *Data quality*, `gold_dq_anomalies`). Fix the source data, then rerun. If the source itself has no data, see [Known source gap](#known-source-gap-data-quality-waiver). A malformed `dq_waivers.yaml` also fails the task (`WaiverError`). |
 | any notebook task | Serverless environment install failed (wheel or pinned packages). | Check the task's environment log; redeploy (`bundle deploy` rebuilds the wheel). |
 
 ## Rerun prod safely
@@ -108,6 +109,113 @@ FROM workspace.energy_prod.gold_forecast_hourly
 WHERE issue_date = '2027-03-27'
 GROUP BY ALL;
 ```
+
+## Known source gap (data-quality waiver)
+
+`detect_anomalies` fails on critical findings, e.g. `completeness day_ahead_price ... 24 of 24
+hours missing`. Sometimes the source simply has no data for a day. Then the rule stays as it is
+and a **reviewed waiver** in `src/energy_lakehouse/dq_waivers.yaml` lets the run pass for exactly
+that check, series and date until an expiry date.
+
+What a waiver does (`energy_lakehouse.dq_waivers`, called in `20_detect_anomalies.py`):
+
+- Matches only a **critical** row with the same `check_name`, the same `entity` and its local
+  (Europe/Berlin) date in `dates`. Other dates, series or checks still fail the run.
+- The row is still written to `gold_dq_anomalies`, with `status = 'waived'` and `waiver_reason`,
+  counted in `gold_dq_daily_summary`, and printed as `WAIVED: ...` in the task output.
+- From the day after `expires` it is ignored: the finding fails the run again and the task
+  prints `WARNING: expired waiver ignored: ...`.
+- A malformed file, a missing `reason`/`expires`/`evidence`/`approved_by`, an unknown key or check,
+  or two entries for the same check/entity/date fail the task (and `pytest` in CI).
+
+### 1. Verify the gap at SMARD
+
+Check both resolutions of the series (filter and region from `smard_config.SERIES`; day-ahead
+price = `4169` / `DE-LU`). SMARD chunks are weekly and start on Monday 00:00 local time; the
+timestamps are milliseconds. Set `$monday` to the Monday of the week with the gap (offset `+01:00`
+in winter, `+02:00` in summer):
+
+```powershell
+$base = 'https://www.smard.de/app/chart_data/4169/DE-LU'
+$monday = [DateTimeOffset]::Parse('2026-11-16T00:00:00+01:00')
+foreach ($res in 'hour', 'quarterhour') {
+    $index = (Invoke-RestMethod "$base/index_$res.json").timestamps
+    $ts = ($index | Where-Object { $_ -le $monday.ToUnixTimeMilliseconds() } | Measure-Object -Maximum).Maximum
+    $chunk = Invoke-RestMethod "$base/4169_DE-LU_${res}_$ts.json"
+    "$res (chunk $ts):"
+    $chunk.series | ForEach-Object {
+        [pscustomobject]@{
+            day    = [DateTimeOffset]::FromUnixTimeMilliseconds($_[0]).ToOffset($monday.Offset).ToString('yyyy-MM-dd')
+            filled = $null -ne $_[1]
+        }
+    } | Group-Object day | ForEach-Object {
+        '  {0}: {1} of {2} filled' -f $_.Name, @($_.Group | Where-Object filled).Count, $_.Count
+    }
+}
+```
+
+Expected for a real source gap: the gap days show `0 of 24` (hour) and `0 of 96` (quarterhour),
+the neighbouring days are complete. Then confirm the pipeline saw the same (the landing file
+exists, the values are NULL, so `value_published` dropped them):
+
+```sql
+SELECT to_date(from_utc_timestamp(timestamp_utc, 'Europe/Berlin')) AS day_local, count(*) AS n
+FROM workspace.energy_prod.silver_energy_long
+WHERE series_name = 'day_ahead_price' AND timestamp_utc >= '2026-11-18'
+GROUP BY ALL ORDER BY 1;
+```
+
+If SMARD **has** the values but silver does not, it is not a source gap: rerun the refresh
+(the newest chunks are re-downloaded) or fix the pipeline. No waiver.
+
+### 2. When a waiver is allowed
+
+- The gap is verified at the source in **both** resolutions and recorded in `evidence` (date of
+  the check, filter/region, filled counts, neighbouring days).
+- The days are in the past and named one by one; no ranges, no future dates.
+- The check emits critical findings (`completeness`, `physics_solar_at_night`,
+  `forecast_drift_mape`); warnings never fail the run and cannot be waived. No `TEST:` entities.
+- `expires` is short (a few weeks; at least the last waived date). `completeness` looks only at the
+  7 days before today, so the finding leaves the window by itself after a week; the waiver is
+  then only a safety margin for reruns.
+- Never to silence a pipeline bug, a missing grant or an extraction failure.
+
+### 3. Add a waiver (PR)
+
+1. Branch, add an entry to `src/energy_lakehouse/dq_waivers.yaml`:
+
+   ```yaml
+   - check: completeness
+     entity: day_ahead_price
+     dates: [2026-11-20, 2026-11-21]
+     reason: SMARD published no day-ahead prices (hour and quarterhour) for these days
+     evidence: >-
+       Checked 2026-11-23 at SMARD, filter 4169 DE-LU: hour 0 of 24, quarterhour 0 of 96 ...
+     approved_by: <reviewer name>
+     expires: 2026-12-31
+   ```
+
+2. `uv run python -m pytest tests/test_dq_waivers.py tests/test_wheel.py` (the packaged file must
+   load), then the full `uv run python -m pytest`.
+3. Open the PR with the SMARD output from step 1; the reviewer named in `approved_by` approves it.
+4. The file ships in the wheel, so it reaches a target only with a bundle deploy: merge (staging
+   deploys from `master`), then publish a release for prod ([Release checklist](#release-checklist)).
+5. Rerun the prod job ([Rerun prod safely](#rerun-prod-safely)). The `detect_anomalies` output
+   shows `WAIVED: completeness day_ahead_price 2026-11-20 ...` and ends with
+   `OK: no open critical anomalies (..., 2 waived)`.
+
+```sql
+SELECT check_name, entity, ts_utc, severity, status, waiver_reason, detected_at
+FROM workspace.energy_prod.gold_dq_anomalies
+WHERE status = 'waived' ORDER BY ts_utc;
+```
+
+### 4. Remove a waiver (PR)
+
+Remove the entry once it has expired (the task warns `expired waiver ignored` every day until
+then), or earlier if SMARD backfills the data. Same PR flow; keep `waivers: []` when the list is
+empty (the file must stay). Rows already written keep `status = 'waived'` as history; a later
+re-detection of the same row is written as `open` again.
 
 ## Secret rotation
 

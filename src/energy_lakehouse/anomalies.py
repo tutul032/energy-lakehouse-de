@@ -27,9 +27,12 @@ from energy_lakehouse.transforms import GOLD_DQ_ANOMALIES_COLUMNS, LOCAL_TZ
 
 CRITICAL = "critical"
 WARNING = "warning"
+# Columns set after detection: detected_at (run start), status/waiver_reason (dq_waivers).
+RUN_COLUMNS: tuple[str, ...] = ("detected_at", "status", "waiver_reason")
 ANOMALY_COLUMNS: tuple[str, ...] = tuple(
-    name for name, _, _ in GOLD_DQ_ANOMALIES_COLUMNS if name != "detected_at"
+    name for name, _, _ in GOLD_DQ_ANOMALIES_COLUMNS if name not in RUN_COLUMNS
 )
+STATUS_OPEN = "open"  # default; "waived" is set by dq_waivers.apply_waivers
 KEY_COLUMNS: tuple[str, ...] = ("check_name", "entity", "ts_utc")
 FLOAT_COLUMNS: tuple[str, ...] = ("value", "expected", "lower", "upper", "score")
 TEST_PREFIX = "TEST:"  # entity prefix of injected test anomalies (never fail the run)
@@ -586,10 +589,12 @@ def summary_rows(anomalies: pd.DataFrame, detection_date: date) -> pd.DataFrame:
 
 
 def critical_failures(anomalies: pd.DataFrame) -> list[str]:
-    """One line per critical row that should fail the run (``TEST:`` entities excluded)."""
-    critical = anomalies[
-        (anomalies["severity"] == CRITICAL) & ~anomalies["entity"].str.startswith(TEST_PREFIX)
-    ]
+    """One line per critical row that should fail the run (``TEST:`` entities and rows with
+    ``status == 'waived'`` excluded; without a ``status`` column nothing is waived)."""
+    mask = (anomalies["severity"] == CRITICAL) & ~anomalies["entity"].str.startswith(TEST_PREFIX)
+    if "status" in anomalies.columns:
+        mask &= anomalies["status"].ne("waived")
+    critical = anomalies[mask]
     return [
         f"{r.check_name} {r.entity} {r.ts_utc:%Y-%m-%d %H:%M} UTC: {r.reason}"
         for r in critical.itertuples(index=False)
@@ -601,6 +606,8 @@ def to_spark_rows(anomalies: pd.DataFrame, detected_at) -> pd.DataFrame:
     rows = anomalies[list(ANOMALY_COLUMNS)].copy()
     rows["ts_utc"] = to_utc(rows["ts_utc"]).dt.tz_localize(None)
     rows["detected_at"] = to_utc(detected_at).tz_localize(None)
+    rows["status"] = anomalies["status"] if "status" in anomalies.columns else STATUS_OPEN
+    rows["waiver_reason"] = anomalies.get("waiver_reason")
     rows = rows.astype(object).where(rows.notna(), None)
     return rows[[name for name, _, _ in GOLD_DQ_ANOMALIES_COLUMNS]]
 
@@ -612,6 +619,23 @@ def merge_anomalies_sql(fqn: str, source: str = ANOMALY_VIEW) -> str:
         f"MERGE INTO {fqn} AS t USING {source} AS s ON {on} "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
     )
+
+
+def add_missing_columns_sql(fqn: str, existing: Iterable[str]) -> list[str]:
+    """Migrate an older gold_dq_anomalies: ``ALTER TABLE ADD COLUMNS`` for every column of
+    GOLD_DQ_ANOMALIES_COLUMNS not in ``existing`` (appended, same order as a new table), and
+    ``status = 'open'`` for rows written before the column existed. Empty if up to date."""
+    have = {c.lower() for c in existing}
+    missing = [c for c in GOLD_DQ_ANOMALIES_COLUMNS if c[0] not in have]
+    if not missing:
+        return []
+    cols = ", ".join(f"{n} {t} COMMENT {sql_string(c)}" for n, t, c in missing)
+    statements = [f"ALTER TABLE {fqn} ADD COLUMNS ({cols})"]
+    if any(n == "status" for n, _, _ in missing):
+        statements.append(
+            f"UPDATE {fqn} SET status = {sql_string(STATUS_OPEN)} WHERE status IS NULL"
+        )
+    return statements
 
 
 def _date_sql(day: date) -> str:
@@ -636,7 +660,7 @@ def summary_for_day_sql(fqn: str, day: date) -> str:
 def top_anomalies_sql(fqn: str, day: date, limit: int = TOP_ANOMALIES) -> str:
     """Anomalies detected on local ``day``: critical first, then by score."""
     return (
-        f"SELECT check_name, entity, ts_utc, severity, score, reason FROM {fqn} "
+        f"SELECT check_name, entity, ts_utc, severity, status, score, reason FROM {fqn} "
         f"WHERE to_date(from_utc_timestamp(detected_at, '{LOCAL_TZ}')) = {_date_sql(day)} "
         "ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END, score DESC, ts_utc DESC "
         f"LIMIT {int(limit)}"
@@ -647,7 +671,8 @@ def llm_prompt(day: date, summary: Iterable[Mapping], top: Iterable[Mapping]) ->
     """Short prompt: the day's counts per check/severity and the top anomalies (pass <= 10)."""
     counts = [f"- {r['check_name']} / {r['severity']}: {r['n']}" for r in summary]
     lines = [
-        f"- [{r['severity']}] {r['check_name']} {r['entity']} at {r['ts_utc']} UTC: {r['reason']}"
+        f"- [{r['severity']}{', waived' if r.get('status') == 'waived' else ''}] "
+        f"{r['check_name']} {r['entity']} at {r['ts_utc']} UTC: {r['reason']}"
         for r in top
     ]
     return "\n".join(
@@ -655,7 +680,8 @@ def llm_prompt(day: date, summary: Iterable[Mapping], top: Iterable[Mapping]) ->
             "Summarize today's data-quality status of a German energy lakehouse (SMARD "
             "load/generation/prices, Open-Meteo weather, day-ahead forecasts) for a data "
             "engineer in 3-5 plain-language sentences. Severity 'warning' means unusual but "
-            "possibly real; 'critical' means a likely data error. Name critical issues first "
+            "possibly real; 'critical' means a likely data error; 'waived' marks a known, reviewed "
+            "source gap that did not fail the run. Name open critical issues first "
             "and suggest a likely cause or next step. Entities starting with TEST: are "
             "injected test anomalies; mention them only as tests.",
             f"Detection date (Europe/Berlin): {day.isoformat()}",

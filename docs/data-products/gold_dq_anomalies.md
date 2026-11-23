@@ -6,7 +6,7 @@ Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-s
 
 | | |
 |---|---|
-| Contract | `energy.gold_dq_anomalies` v0.1.0 (draft) |
+| Contract | `energy.gold_dq_anomalies` v0.2.0 (draft) |
 | Owner | Rezaul Tutul (rezaul.tutul@yahoo.com) |
 | Table (prod) | `workspace.energy_prod.gold_dq_anomalies` |
 | Grain | one row per check_name, entity and ts_utc |
@@ -14,7 +14,7 @@ Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-s
 | Freshness SLA | newest `detected_at` at most 336 h old |
 | Refresh | daily ~05:17 UTC (detect_anomalies task) |
 | Consumers | `energy-consumers` (SELECT) |
-| Tags | `contract_id=energy.gold_dq_anomalies`, `contract_version=0.1.0`, `data_product=energy_dq_anomalies`, `domain=data_quality`, `layer=gold`, `source=smard+open-meteo` |
+| Tags | `contract_id=energy.gold_dq_anomalies`, `contract_version=0.2.0`, `data_product=energy_dq_anomalies`, `domain=data_quality`, `layer=gold`, `source=smard+open-meteo` |
 
 ## Columns
 
@@ -31,6 +31,8 @@ Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-s
 | `severity` | STRING | no | critical or warning. |
 | `reason` | STRING | no | Short human-readable explanation. |
 | `detected_at` | TIMESTAMP | no | Start (UTC) of the latest detection run that flagged the row. |
+| `status` | STRING | no | open, or waived: a critical finding matching an unexpired reviewed waiver (energy_lakehouse/dq_waivers.yaml); waived rows do not fail the run. |
+| `waiver_reason` | STRING | yes | Reason of the matching waiver if status = waived, else NULL. |
 
 ## Quality rules
 
@@ -39,12 +41,14 @@ Checked after every refresh by `05_verify_contracts` (task `verify_contracts` of
 
 | Rule | Check | Max violations |
 |---|---|---|
-| `required_columns_not_null` | not NULL: `check_name`, `entity`, `ts_utc`, `score`, `severity`, `reason`, `detected_at` | 0% |
+| `required_columns_not_null` | not NULL: `check_name`, `entity`, `ts_utc`, `score`, `severity`, `reason`, `detected_at`, `status` | 0% |
 | `unique_anomaly` | unique: `check_name`, `entity`, `ts_utc` | 0% |
 | `known_check` | `check_name IN ('seasonal_robust_z', 'isolation_forest', 'completeness', 'physics_solar_at_night', 'forecast_drift_mae', 'forecast_drift_mape')` | 0% |
 | `known_severity` | `severity IN ('critical', 'warning')` | 0% |
 | `isolation_forest_warning_only` | `check_name <> 'isolation_forest' OR severity = 'warning'` | 0% |
 | `score_non_negative` | `score >= 0` | 0% |
+| `known_status` | `status IN ('open', 'waived')` | 0% |
+| `waived_critical_with_reason` | `status <> 'waived' OR (severity = 'critical' AND waiver_reason IS NOT NULL)` | 0% |
 | `detected_after_ts` | `detected_at >= ts_utc` | 0% |
 
 ## Request access

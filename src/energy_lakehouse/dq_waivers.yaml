@@ -1,0 +1,23 @@
+# Reviewed waivers for known source gaps in the detect_anomalies gate (energy_lakehouse.dq_waivers).
+# A waiver does not weaken a check: the finding is still written to gold_dq_anomalies, with
+# status 'waived' and the reason below, and printed as "WAIVED: ...", but it does not fail the run.
+#
+# Matching is exact: a CRITICAL finding with check_name == check, entity == entity and its local
+# (Europe/Berlin) date in dates. Valid through expires (inclusive); after that the waiver is
+# ignored (the finding fails the run again) and logged as a warning; remove it by PR.
+#
+# Required per entry: check, entity, dates (non-empty list), reason, evidence, approved_by,
+# expires (>= last date). Unknown keys, a malformed file or overlapping entries fail the job.
+# Only for gaps verified at the source (docs/runbook.md "Known source gap (data-quality waiver)").
+# Ships in the wheel as package data; changes reach Databricks only with a bundle deploy.
+waivers:
+  - check: completeness
+    entity: day_ahead_price
+    dates: [2026-11-20, 2026-11-21]
+    reason: SMARD published no day-ahead prices (hour and quarterhour) for these days
+    evidence: >-
+      Checked 2026-11-23 at SMARD, filter 4169 (day-ahead price DE-LU), region DE-LU:
+      resolution hour 0 of 24 and quarterhour 0 of 96 values filled for 2026-11-20 and
+      2026-11-21; 2026-11-19, 2026-11-22 and 2026-11-23 complete. Not a pipeline bug.
+    approved_by: Rezaul Tutul
+    expires: 2026-12-31

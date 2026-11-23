@@ -395,6 +395,15 @@ GOLD_DQ_ANOMALIES_COLUMNS: list[tuple[str, str, str]] = [
     ("severity", "STRING", "critical or warning."),
     ("reason", "STRING", "Short human-readable explanation."),
     ("detected_at", "TIMESTAMP", "Start (UTC) of the latest detection run that flagged the row."),
+    # Appended after detected_at: ALTER TABLE ADD COLUMNS on an existing table puts them last,
+    # so a migrated table and a new one have the same column order.
+    (
+        "status",
+        "STRING",
+        "open, or waived: a critical finding matching an unexpired reviewed waiver "
+        "(energy_lakehouse/dq_waivers.yaml); waived rows do not fail the run.",
+    ),
+    ("waiver_reason", "STRING", "Reason of the matching waiver if status = waived, else NULL."),
 ]
 
 # Daily anomaly counts (written by 20_detect_anomalies): one row per day, check and severity.

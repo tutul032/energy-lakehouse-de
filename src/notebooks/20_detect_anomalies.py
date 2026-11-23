@@ -10,6 +10,11 @@
 # MAGIC day's counts in `gold_dq_daily_summary`. Fails if an input window is empty or a critical
 # MAGIC anomaly was found (entities starting with `TEST:` excluded).
 # MAGIC
+# MAGIC Known source gaps: a critical row that exactly matches an unexpired reviewed waiver
+# MAGIC (`energy_lakehouse/dq_waivers.yaml`, shipped in the wheel) is written with
+# MAGIC `status = 'waived'` and printed as `WAIVED: ...` instead of failing the run. Expired
+# MAGIC waivers are ignored (logged as a warning); a malformed waiver file fails the task.
+# MAGIC
 # MAGIC `inject_test_anomaly = true` (dev schemas only) adds the series `TEST:total_load`, a copy of
 # MAGIC `total_load` with the most recent complete hour halved, so the pipeline can be tested
 # MAGIC end to end without touching real data.
@@ -20,7 +25,7 @@ from datetime import timedelta
 
 import pandas as pd
 
-from energy_lakehouse import anomalies, forecast
+from energy_lakehouse import anomalies, dq_waivers, forecast
 from energy_lakehouse.smard_config import SERIES
 from energy_lakehouse.transforms import (
     GOLD_DQ_ANOMALIES_COLUMNS,
@@ -53,6 +58,10 @@ now = pd.Timestamp.now(tz="UTC").floor("min")
 today = spark.sql(f"SELECT {anomalies.LOCAL_TODAY_SQL} AS d").first()["d"]
 score_from = now - pd.Timedelta(days=anomalies.SCORE_DAYS)
 print(f"Detecting anomalies in {catalog}.{schema} at {now} (local day {today}), inject={inject}")
+
+# Fail fast on a malformed waiver file (never ignore it silently).
+waivers = dq_waivers.load_waivers()
+print(f"Loaded {len(waivers)} data-quality waiver(s) from {dq_waivers.default_waivers_path()}")
 
 # COMMAND ----------
 
@@ -119,6 +128,11 @@ for name, frame in frames.items():
     print(f"{name}: {len(frame)} rows")
 rows = anomalies.combine(frames.values())
 
+waiver_result = dq_waivers.apply_waivers(rows, waivers, today)
+rows = waiver_result.rows
+for line in waiver_result.warnings:
+    print(f"WARNING: {line}")
+
 # COMMAND ----------
 
 anomaly_table = fqn("gold_dq_anomalies")
@@ -133,6 +147,12 @@ spark.sql(
         summary_table, GOLD_DQ_DAILY_SUMMARY_COLUMNS, GOLD_TABLE_COMMENTS["gold_dq_daily_summary"]
     )
 )
+# Tables created before status/waiver_reason existed get them added (CREATE IF NOT EXISTS won't).
+for statement in anomalies.add_missing_columns_sql(
+    anomaly_table, spark.table(anomaly_table).columns
+):
+    print(f"Migrating {anomaly_table}: {statement}")
+    spark.sql(statement)
 
 if not rows.empty:
     updates = spark.createDataFrame(
@@ -153,7 +173,11 @@ print(f"OK: wrote {len(summary)} summary rows for {today} into {summary_table}")
 
 print(summary.to_string(index=False))
 if not rows.empty:
-    print(rows[["check_name", "entity", "ts_utc", "severity", "score", "reason"]].head(20))
+    print(
+        rows[["check_name", "entity", "ts_utc", "severity", "status", "score", "reason"]].head(20)
+    )
+for line in waiver_result.waived:
+    print(line)
 
 failures = anomalies.critical_failures(rows)
 if failures:
@@ -161,4 +185,6 @@ if failures:
         f"{len(failures)} critical data-quality anomalies:\n"
         + "\n".join(f"- {f}" for f in failures)
     )
-print("OK: no critical anomalies (TEST: entities excluded)")
+print(
+    f"OK: no open critical anomalies (TEST: entities excluded, {len(waiver_result.waived)} waived)"
+)

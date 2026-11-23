@@ -7,7 +7,7 @@
 apiVersion: v1
 kind: DataContract
 id: energy.gold_dq_anomalies
-version: 0.1.0
+version: 0.2.0                       # 0.2.0: + status, waiver_reason (MINOR)
 status: draft
 owner: {name: Rezaul Tutul, email: rezaul.tutul@yahoo.com}
 description: "Data-quality anomalies from the daily detect_anomalies task: seasonal robust z-scores per SMARD series, an IsolationForest over the hourly gold features, completeness per series and local day, physics rules and forecast drift. One row per check_name, entity and ts_utc; a re-detection updates the row."
@@ -32,10 +32,14 @@ columns:
   - {name: severity, type: STRING, nullable: false, description: "critical or warning."}
   - {name: reason, type: STRING, nullable: false, description: "Short human-readable explanation."}
   - {name: detected_at, type: TIMESTAMP, nullable: false, description: "Start (UTC) of the latest detection run that flagged the row."}
+  - {name: status, type: STRING, nullable: false, description: "open, or waived: a critical finding matching an unexpired reviewed waiver (energy_lakehouse/dq_waivers.yaml); waived rows do not fail the run."}
+  - {name: waiver_reason, type: STRING, description: "Reason of the matching waiver if status = waived, else NULL."}
 quality:
   - {name: unique_anomaly, type: unique, columns: [check_name, entity, ts_utc]}
   - {name: known_check, type: row_condition, sql: "check_name IN ('seasonal_robust_z', 'isolation_forest', 'completeness', 'physics_solar_at_night', 'forecast_drift_mae', 'forecast_drift_mape')", max_violation_pct: 0}
   - {name: known_severity, type: row_condition, sql: "severity IN ('critical', 'warning')", max_violation_pct: 0}
   - {name: isolation_forest_warning_only, type: row_condition, sql: "check_name <> 'isolation_forest' OR severity = 'warning'", max_violation_pct: 0}
   - {name: score_non_negative, type: row_condition, sql: "score >= 0", max_violation_pct: 0}
+  - {name: known_status, type: row_condition, sql: "status IN ('open', 'waived')", max_violation_pct: 0}
+  - {name: waived_critical_with_reason, type: row_condition, sql: "status <> 'waived' OR (severity = 'critical' AND waiver_reason IS NOT NULL)", max_violation_pct: 0}
   - {name: detected_after_ts, type: row_condition, sql: "detected_at >= ts_utc", max_violation_pct: 0}
