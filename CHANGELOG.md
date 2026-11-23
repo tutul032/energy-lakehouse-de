@@ -3,7 +3,7 @@
 All notable changes, by GitHub release. Versions follow [semver](https://semver.org/); dates are
 release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after approval.
 
-## [Unreleased]
+## [v1.3.3] - 2026-11-23 — Azure foundation, remote Terraform state, data-quality waivers
 
 ### Added
 - VS Code dev container (`.devcontainer/`): pinned Python 3.12 image, uv, Databricks CLI, GitHub
