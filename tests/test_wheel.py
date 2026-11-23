@@ -1,9 +1,10 @@
-"""The energy_lakehouse wheel ships contracts/*.yaml and loads them from package resources.
+"""The energy_lakehouse wheel ships contracts/*.yaml and dq_waivers.yaml and loads them from
+package resources.
 
 Builds the wheel once with `uv build --wheel` (as databricks.yml does), checks that every
 contracts/*.yaml is in it as energy_lakehouse/contracts_data/<name>, then extracts it (a pure
-wheel: extracting = installing) and runs load_contracts() in a subprocess that imports
-energy_lakehouse from the extracted copy, where the repo's contracts/ is not reachable.
+wheel: extracting = installing) and runs load_contracts() / load_waivers() in a subprocess that
+imports energy_lakehouse from the extracted copy, where the repo's contracts/ is not reachable.
 """
 
 import json
@@ -23,7 +24,7 @@ LOAD_SCRIPT = """
 import json
 from pathlib import Path
 
-from energy_lakehouse import contracts
+from energy_lakehouse import contracts, dq_waivers
 
 directory = contracts.default_contracts_dir()
 print(json.dumps({
@@ -31,6 +32,8 @@ print(json.dumps({
     "directory": str(directory),
     "source_dir_exists": contracts.CONTRACTS_DIR.is_dir(),
     "tables": [c.table for c in contracts.load_contracts()],
+    "waivers_path": str(dq_waivers.default_waivers_path()),
+    "waivers": len(dq_waivers.load_waivers()),
 }))
 """
 
@@ -57,6 +60,11 @@ def test_wheel_contains_every_contract(wheel):
     assert not missing, f"wheel lacks contracts: {missing}"
 
 
+def test_wheel_contains_waiver_file(wheel):
+    names = set(zipfile.ZipFile(wheel).namelist())
+    assert "energy_lakehouse/dq_waivers.yaml" in names
+
+
 def test_load_contracts_from_installed_wheel(wheel, tmp_path):
     site = tmp_path / "site"
     zipfile.ZipFile(wheel).extractall(site)
@@ -75,3 +83,5 @@ def test_load_contracts_from_installed_wheel(wheel, tmp_path):
     assert not loaded["source_dir_exists"]
     assert Path(loaded["directory"]) == site / "energy_lakehouse" / "contracts_data"
     assert sorted(f"{t}.yaml" for t in loaded["tables"]) == CONTRACT_FILES
+    assert Path(loaded["waivers_path"]) == site / "energy_lakehouse" / "dq_waivers.yaml"
+    assert loaded["waivers"] >= 1

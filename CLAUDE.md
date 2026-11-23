@@ -54,6 +54,8 @@ src/energy_lakehouse/       # pure, unit-tested Python package (built as a wheel
   quality.py                #   daily-refresh quality checks (thresholds, CheckResult, raise)
   anomalies.py              #   ML-assisted DQ (pandas): seasonal robust z, IsolationForest,
                             #   completeness, physics rules, forecast drift; summary/MERGE SQL, LLM prompt
+  dq_waivers.py             #   reviewed waivers for known source gaps: load/validate, apply_waivers
+  dq_waivers.yaml           #   the waiver list (package data, ships in the wheel; change only by PR)
   contracts.py              #   data contracts: pydantic models, YAML loader, SQL renderers,
                             #   schema/quality/freshness checks, product-page markdown
   dashboard.py              #   per-target dashboard build: TARGET_SCHEMAS, build_dashboard (stdlib)
@@ -312,7 +314,15 @@ builds its own tables in its own schema.
     ("no silent success"), MERGEs into `gold_dq_anomalies` on (check_name, entity, ts_utc)
     (`detected_at` = latest run), writes `gold_dq_daily_summary` (every check × severity, n = 0
     included) with `INSERT INTO … REPLACE WHERE detection_date = …`, prints the summary, then
-    raises listing every critical row (entities `TEST:` excluded). German dates come from
+    raises listing every critical row (entities `TEST:` excluded). Before raising,
+    `dq_waivers.apply_waivers` marks critical rows that exactly match an unexpired waiver in
+    `src/energy_lakehouse/dq_waivers.yaml` (check, entity, local date in `dates`; valid through
+    `expires`) as `status = 'waived'` + `waiver_reason`: written and printed `WAIVED: ...`, not
+    raised. Expired waivers are ignored with a warning; a malformed file (missing
+    reason/evidence/approved_by/expires, unknown key/check, overlap) raises `WaiverError`. Never
+    weaken a detector for a source gap; add a waiver by PR (runbook "Known source gap").
+    `gold_dq_anomalies` has `status`/`waiver_reason` after `detected_at`; older tables get them via
+    `anomalies.add_missing_columns_sql` (ALTER TABLE ADD COLUMNS + status = 'open'). German dates come from
     `anomalies.LOCAL_TODAY_SQL` = `to_date(from_utc_timestamp(current_timestamp(), 'Europe/Berlin'))`.
     Job parameter `inject_test_anomaly` (default `"false"`; the notebook refuses schemas not
     ending in `_dev`) adds `TEST:total_load`, a copy of total_load with the most recent complete

@@ -15,6 +15,13 @@ release dates (UTC). Each release is deployed to prod by `deploy-prod.yml` after
   no secrets; ci.yml job `terraform` (fmt, validate, tflint, no credentials). ([#21])
 - `.claude/settings.json`: Claude Code may not run `terraform apply`, `destroy`, `state` or
   `import`; guarded by `tests/test_terraform.py`.
+- Reviewed data-quality waivers for known source gaps (`src/energy_lakehouse/dq_waivers.yaml`,
+  `dq_waivers.py`, shipped in the wheel): a critical finding that exactly matches an unexpired
+  waiver (check, entity, local date) does not fail `detect_anomalies` but is written with
+  `status = 'waived'`; expired waivers are ignored with a warning, a malformed file fails the task.
+  First waiver: SMARD published no day-ahead prices for 2026-11-20/21. `gold_dq_anomalies`
+  contract 0.2.0 (+ `status`, `waiver_reason`; existing tables are migrated by the task).
+  Runbook: "Known source gap (data-quality waiver)".
 
 ### Changed
 - Removed the refresh SP's unused `USE_SCHEMA` on `energy_dev`, the first change made through
